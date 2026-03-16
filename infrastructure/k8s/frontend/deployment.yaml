@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instantdeploy-frontend
+  namespace: instantdeploy
+  labels:
+    app: instantdeploy-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instantdeploy-frontend
+  template:
+    metadata:
+      labels:
+        app: instantdeploy-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: instantdeploy-frontend:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi

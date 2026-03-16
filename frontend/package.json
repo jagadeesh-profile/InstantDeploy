@@ -1,0 +1,31 @@
+{
+	"name": "instantdeploy-frontend",
+	"private": true,
+	"version": "1.0.0",
+	"type": "module",
+	"scripts": {
+		"dev": "vite --host 0.0.0.0 --port 5173",
+		"build": "tsc && vite build",
+		"preview": "vite preview --host 0.0.0.0 --port 4173"
+	},
+	"dependencies": {
+		"axios": "^1.8.2",
+		"lucide-react": "^0.294.0",
+		"react": "^18.3.1",
+		"react-dom": "^18.3.1",
+		"react-hot-toast": "^2.4.1",
+		"react-router-dom": "^6.20.1",
+		"zustand": "^4.4.7"
+	},
+	"devDependencies": {
+		"@types/node": "^20.10.0",
+		"@types/react": "^18.3.12",
+		"@types/react-dom": "^18.3.1",
+		"@vitejs/plugin-react": "^4.3.3",
+		"autoprefixer": "^10.4.16",
+		"postcss": "^8.4.32",
+		"tailwindcss": "^3.3.6",
+		"typescript": "^5.6.3",
+		"vite": "^5.4.10"
+	}
+}

@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: instantdeploy-backend
+  namespace: instantdeploy
+  labels:
+    app: instantdeploy-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: instantdeploy-backend
+  template:
+    metadata:
+      labels:
+        app: instantdeploy-backend
+    spec:
+      containers:
+        - name: backend
+          image: instantdeploy-backend:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: instantdeploy-backend-config
+            - secretRef:
+                name: instantdeploy-backend-secret
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

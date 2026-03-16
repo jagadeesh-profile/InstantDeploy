@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: InstantDeploy Dashboards
+    orgId: 1
+    folder: InstantDeploy
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

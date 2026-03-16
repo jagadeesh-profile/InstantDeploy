@@ -1,0 +1,124 @@
+services:
+  backend:
+    build:
+      context: ../backend
+    container_name: instantdeploy-backend
+    environment:
+      PORT: 8080
+      JWT_SECRET: instantdeploy-dev-secret
+      JWT_EXPIRY_MINUTES: 120
+      DATABASE_URL: postgres://instantdeploy_user:instantdeploy_pass@postgres:5432/instantdeploy?sslmode=disable
+      REDIS_ADDR: redis:6379
+      BUILD_TIMEOUT: 900
+      MAX_BUILD_RETRIES: 3
+    ports:
+      - "${BACKEND_HOST_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - instantdeploy-network
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        VITE_API_URL: http://localhost:${BACKEND_HOST_PORT:-8080}
+    container_name: instantdeploy-frontend
+    environment:
+      VITE_API_URL: http://localhost:${BACKEND_HOST_PORT:-8080}
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    networks:
+      - instantdeploy-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: instantdeploy-postgres
+    environment:
+      POSTGRES_DB: instantdeploy
+      POSTGRES_USER: instantdeploy_user
+      POSTGRES_PASSWORD: instantdeploy_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../scripts/seed-db.sql:/docker-entrypoint-initdb.d/seed-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U instantdeploy_user -d instantdeploy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - instantdeploy-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: instantdeploy-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - instantdeploy-network
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: instantdeploy-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - backend
+    networks:
+      - instantdeploy-network
+
+  loki:
+    image: grafana/loki:3.2.0
+    container_name: instantdeploy-loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+    ports:
+      - "3100:3100"
+    networks:
+      - instantdeploy-network
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    container_name: instantdeploy-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - instantdeploy-network
+
+networks:
+  instantdeploy-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+

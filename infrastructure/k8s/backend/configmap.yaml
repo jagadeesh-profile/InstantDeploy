@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: instantdeploy-backend-config
+  namespace: instantdeploy
+data:
+  PORT: "8080"
+  JWT_EXPIRY_MINUTES: "120"
+  REDIS_ADDR: "redis:6379"
+  DATABASE_URL: "postgres://postgres:postgres@postgres:5432/instantdeploy?sslmode=disable"

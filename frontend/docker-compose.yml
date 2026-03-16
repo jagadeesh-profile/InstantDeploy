@@ -1,0 +1,9 @@
+services:
+  instantdeploy-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: instantdeploy-frontend
+    ports:
+      - "8090:80"
+    restart: unless-stopped
