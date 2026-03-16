@@ -813,11 +813,34 @@ func dockerBuildArgs(image, dockerfilePath string) []string {
 }
 
 func checkDockerDaemonAvailable() error {
+	// First check if the socket file exists at all
+	socketPath := "/var/run/docker.sock"
+	if envSocket := os.Getenv("DOCKER_HOST"); envSocket != "" {
+		socketPath = strings.TrimPrefix(envSocket, "unix://")
+	}
+	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+		return fmt.Errorf(
+			"Docker socket not found at %s — mount it in docker-compose: volumes: [/var/run/docker.sock:/var/run/docker.sock]",
+			socketPath,
+		)
+	}
+
+	// Check socket is readable (permission issue)
+	f, err := os.OpenFile(socketPath, os.O_RDWR, os.ModeSocket)
+	if err != nil {
+		return fmt.Errorf(
+			"Docker socket exists but is not accessible (permission denied) — add 'group_add: [\"999\"]' to the backend service in docker-compose.yml, or run the container as root: %v",
+			err,
+		)
+	}
+	f.Close()
+
+	// Actually ping the daemon
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := runCmd(ctx, "docker", "info"); err != nil {
 		if isDockerDaemonUnavailableError(err) {
-			return errors.New("cannot connect to the Docker daemon; ensure Docker is running")
+			return errors.New("cannot connect to the Docker daemon; ensure Docker Desktop/daemon is running and reachable")
 		}
 		return err
 	}
@@ -836,7 +859,9 @@ func isDockerDaemonUnavailableError(err error) bool {
 	return strings.Contains(msg, "cannot connect to the docker daemon") ||
 		strings.Contains(msg, "is the docker daemon running") ||
 		strings.Contains(msg, "docker.sock") ||
-		strings.Contains(msg, "error during connect")
+		strings.Contains(msg, "error during connect") ||
+		strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "no such file or directory")
 }
 
 func dockerRunArgs(container, image string, hostPort, containerPort int) []string {

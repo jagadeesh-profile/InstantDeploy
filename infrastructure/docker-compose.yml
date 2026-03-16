@@ -13,11 +13,18 @@ services:
       BUILD_TIMEOUT: 900
       MAX_BUILD_RETRIES: 2
       BUILD_WORKERS: 3
+      # Explicitly tell Go where the Docker socket is
+      DOCKER_HOST: unix:///var/run/docker.sock
     ports:
       - "${BACKEND_HOST_PORT:-8080}:8080"
     volumes:
+      # Mount host Docker socket so backend can build/run containers
       - /var/run/docker.sock:/var/run/docker.sock
       - build_cache:/tmp/builds
+    # Add the host docker group so the container user can access the socket
+    # GID 999 is standard on Ubuntu/Debian; 998 on Fedora/RHEL — covers both
+    group_add:
+      - "999"
     depends_on:
       postgres:
         condition: service_healthy
