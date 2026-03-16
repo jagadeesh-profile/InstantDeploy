@@ -10,7 +10,6 @@ import Layout from "./components/Layout";
 export default function App() {
   const { token, isAuthenticated } = useAuthStore();
 
-  // Sync zustand token into the axios helper on load and token change
   useEffect(() => {
     setToken(token ?? "");
   }, [token]);

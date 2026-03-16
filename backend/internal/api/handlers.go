@@ -24,6 +24,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// Handler wires all HTTP handlers together.
 type Handler struct {
 	jwt     *auth.JWTManager
 	runtime *runtime.Manager
@@ -46,10 +47,20 @@ type storedUser struct {
 	LockedUntil      time.Time
 }
 
-func NewHandler(jwt *auth.JWTManager, runtime *runtime.Manager, repos *repository.GitHubClient, metrics *monitoring.Metrics, wsHub *websocket.Hub, store *database.UserStore) *Handler {
+func NewHandler(
+	jwt *auth.JWTManager,
+	rt *runtime.Manager,
+	repos *repository.GitHubClient,
+	metrics *monitoring.Metrics,
+	wsHub *websocket.Hub,
+	store *database.UserStore,
+) *Handler {
+	// Demo password: Demo123! — passes all validation rules
+	demoHash := mustHashPassword("Demo123!")
+
 	h := &Handler{
 		jwt:     jwt,
-		runtime: runtime,
+		runtime: rt,
 		repos:   repos,
 		metrics: metrics,
 		wsHub:   wsHub,
@@ -58,7 +69,7 @@ func NewHandler(jwt *auth.JWTManager, runtime *runtime.Manager, repos *repositor
 			"demo": {
 				Username:     "demo",
 				Email:        "demo@instantdeploy.local",
-				PasswordHash: mustHashPassword("demo123"),
+				PasswordHash: demoHash,
 				Role:         "developer",
 				Verified:     true,
 			},
@@ -71,15 +82,16 @@ func NewHandler(jwt *auth.JWTManager, runtime *runtime.Manager, repos *repositor
 			_ = h.store.CreateUser(database.UserRecord{
 				Username:     "demo",
 				Email:        "demo@instantdeploy.local",
-				PasswordHash: mustHashPassword("demo123"),
+				PasswordHash: demoHash,
 				Role:         "developer",
 				Verified:     true,
 			})
 		}
 	}
-
 	return h
 }
+
+// ==================== USER HELPERS ====================
 
 func userFromRecord(rec database.UserRecord) storedUser {
 	return storedUser{
@@ -118,14 +130,10 @@ func (h *Handler) getUserByUsername(username string) (storedUser, bool, error) {
 		}
 		return userFromRecord(rec), true, nil
 	}
-
 	h.usersMu.RLock()
 	defer h.usersMu.RUnlock()
 	user, exists := h.users[username]
-	if !exists {
-		return storedUser{}, false, nil
-	}
-	return user, true, nil
+	return user, exists, nil
 }
 
 func (h *Handler) getUserByUsernameOrEmail(username, email string) (storedUser, bool, error) {
@@ -139,21 +147,18 @@ func (h *Handler) getUserByUsernameOrEmail(username, email string) (storedUser, 
 		}
 		return userFromRecord(rec), true, nil
 	}
-
 	h.usersMu.RLock()
 	defer h.usersMu.RUnlock()
-
 	if username != "" {
 		if user, exists := h.users[username]; exists {
 			return user, true, nil
 		}
 	}
-	if email == "" {
-		return storedUser{}, false, nil
-	}
-	for _, user := range h.users {
-		if strings.EqualFold(user.Email, email) {
-			return user, true, nil
+	if email != "" {
+		for _, user := range h.users {
+			if strings.EqualFold(user.Email, email) {
+				return user, true, nil
+			}
 		}
 	}
 	return storedUser{}, false, nil
@@ -163,7 +168,6 @@ func (h *Handler) emailExists(email string) (bool, error) {
 	if h.store != nil {
 		return h.store.EmailExists(email)
 	}
-
 	h.usersMu.RLock()
 	defer h.usersMu.RUnlock()
 	for _, user := range h.users {
@@ -178,7 +182,6 @@ func (h *Handler) createUser(user storedUser) error {
 	if h.store != nil {
 		return h.store.CreateUser(userToRecord(user))
 	}
-
 	h.usersMu.Lock()
 	defer h.usersMu.Unlock()
 	h.users[user.Username] = user
@@ -189,12 +192,13 @@ func (h *Handler) updateUser(user storedUser) error {
 	if h.store != nil {
 		return h.store.UpdateUser(userToRecord(user))
 	}
-
 	h.usersMu.Lock()
 	defer h.usersMu.Unlock()
 	h.users[user.Username] = user
 	return nil
 }
+
+// ==================== SYSTEM ENDPOINTS ====================
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 	runtimeStats, err := h.runtime.Stats()
@@ -209,7 +213,6 @@ func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 		})
 		return
 	}
-
 	utils.WriteJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
 		"time":   time.Now().UTC(),
@@ -229,17 +232,17 @@ func (h *Handler) APIRoot(w http.ResponseWriter, _ *http.Request) {
 		"status":  "ok",
 		"api":     "v1",
 		"endpoints": map[string]string{
-			"health":            "/api/v1/health",
-			"auth_signup":       "/api/v1/auth/signup",
-			"auth_verify":       "/api/v1/auth/verify",
-			"auth_forgot":       "/api/v1/auth/forgot-password",
-			"auth_reset":        "/api/v1/auth/reset-password",
-			"auth_login":        "/api/v1/auth/login",
-			"runtime_stats":     "/api/v1/runtime/stats",
-			"deployments_list":  "/api/v1/deployments",
+			"health":             "/api/v1/health",
+			"auth_signup":        "/api/v1/auth/signup",
+			"auth_verify":        "/api/v1/auth/verify",
+			"auth_forgot":        "/api/v1/auth/forgot-password",
+			"auth_reset":         "/api/v1/auth/reset-password",
+			"auth_login":         "/api/v1/auth/login",
+			"runtime_stats":      "/api/v1/runtime/stats",
+			"deployments_list":   "/api/v1/deployments",
 			"deployments_create": "/api/v1/deployments",
-			"metrics":           "/metrics",
-			"websocket":         "/ws",
+			"metrics":            "/metrics",
+			"websocket":          "/ws",
 		},
 	})
 }
@@ -252,6 +255,8 @@ func (h *Handler) RuntimeStats(w http.ResponseWriter, _ *http.Request) {
 	}
 	utils.WriteJSON(w, http.StatusOK, stats)
 }
+
+// ==================== AUTH REQUEST TYPES ====================
 
 type loginRequest struct {
 	Username string `json:"username"`
@@ -280,6 +285,8 @@ type resetPasswordRequest struct {
 	NewPassword string `json:"newPassword"`
 }
 
+// ==================== AUTH HANDLERS ====================
+
 func (h *Handler) SignUp(w http.ResponseWriter, r *http.Request) {
 	var req signUpRequest
 	if err := utils.DecodeJSON(r, &req); err != nil {
@@ -290,21 +297,19 @@ func (h *Handler) SignUp(w http.ResponseWriter, r *http.Request) {
 	username := strings.TrimSpace(req.Username)
 	email := strings.TrimSpace(req.Email)
 	password := strings.TrimSpace(req.Password)
+
 	if username == "" || email == "" || password == "" {
 		utils.WriteError(w, http.StatusBadRequest, "username, email and password are required")
 		return
 	}
-
 	if err := validateUsername(username); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
 	if err := validateEmail(email); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
 	if err := validatePassword(password); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -318,24 +323,21 @@ func (h *Handler) SignUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	emailInUse, err := h.emailExists(email)
-	if err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, "failed to load user")
+	if emailInUse, err := h.emailExists(email); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, "failed to check email")
 		return
-	}
-	if emailInUse {
-		utils.WriteError(w, http.StatusConflict, "email already exists")
+	} else if emailInUse {
+		utils.WriteError(w, http.StatusConflict, "email already registered")
 		return
 	}
 
-	hashed, hashErr := hashPassword(password)
-	if hashErr != nil {
+	hashed, err := hashPassword(password)
+	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "failed to process password")
 		return
 	}
 
 	verificationCode := newVerificationCode()
-
 	if err := h.createUser(storedUser{
 		Username:         username,
 		Email:            email,
@@ -349,7 +351,7 @@ func (h *Handler) SignUp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteJSON(w, http.StatusCreated, map[string]any{
-		"message":           "account created, verify your account before login",
+		"message":           "account created — verify before logging in",
 		"verification_code": verificationCode,
 		"user": models.User{
 			ID:       username,
@@ -365,7 +367,6 @@ func (h *Handler) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	username := strings.TrimSpace(req.Username)
 	code := strings.TrimSpace(req.Code)
 	if username == "" || code == "" {
@@ -382,12 +383,10 @@ func (h *Handler) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusNotFound, "user not found")
 		return
 	}
-
 	if user.Verified {
 		utils.WriteJSON(w, http.StatusOK, map[string]any{"message": "account already verified"})
 		return
 	}
-
 	if user.VerificationCode != code {
 		utils.WriteError(w, http.StatusBadRequest, "invalid verification code")
 		return
@@ -399,7 +398,6 @@ func (h *Handler) VerifyAccount(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, "failed to update user")
 		return
 	}
-
 	utils.WriteJSON(w, http.StatusOK, map[string]any{"message": "account verified"})
 }
 
@@ -409,7 +407,6 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	username := strings.TrimSpace(req.Username)
 	email := strings.TrimSpace(req.Email)
 	if username == "" && email == "" {
@@ -433,7 +430,6 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, "failed to update user")
 		return
 	}
-
 	utils.WriteJSON(w, http.StatusOK, map[string]any{
 		"message":    "password reset code generated",
 		"reset_code": code,
@@ -446,16 +442,13 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	username := strings.TrimSpace(req.Username)
 	code := strings.TrimSpace(req.Code)
 	newPassword := strings.TrimSpace(req.NewPassword)
-
 	if username == "" || code == "" || newPassword == "" {
 		utils.WriteError(w, http.StatusBadRequest, "username, code, and newPassword are required")
 		return
 	}
-
 	if err := validatePassword(newPassword); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -470,7 +463,6 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusNotFound, "user not found")
 		return
 	}
-
 	if user.VerificationCode == "" || user.VerificationCode != code {
 		utils.WriteError(w, http.StatusBadRequest, "invalid reset code")
 		return
@@ -481,7 +473,6 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, "failed to process password")
 		return
 	}
-
 	user.PasswordHash = hash
 	user.VerificationCode = ""
 	user.FailedAttempts = 0
@@ -490,7 +481,6 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, "failed to update user")
 		return
 	}
-
 	utils.WriteJSON(w, http.StatusOK, map[string]any{"message": "password reset successful"})
 }
 
@@ -500,7 +490,6 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	username := strings.TrimSpace(req.Username)
 	password := strings.TrimSpace(req.Password)
 	if username == "" || password == "" {
@@ -517,26 +506,20 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
-
 	if !user.LockedUntil.IsZero() && time.Now().Before(user.LockedUntil) {
 		utils.WriteError(w, http.StatusTooManyRequests, "account temporarily locked due to repeated failed logins")
 		return
 	}
-
 	if !checkPassword(user.PasswordHash, password) {
 		user.FailedAttempts++
 		if user.FailedAttempts >= 5 {
 			user.LockedUntil = time.Now().Add(15 * time.Minute)
 			user.FailedAttempts = 0
 		}
-		if updateErr := h.updateUser(user); updateErr != nil {
-			utils.WriteError(w, http.StatusInternalServerError, "failed to update user")
-			return
-		}
+		_ = h.updateUser(user)
 		utils.WriteError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
-
 	if !user.Verified {
 		utils.WriteError(w, http.StatusUnauthorized, "account not verified")
 		return
@@ -544,17 +527,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	user.FailedAttempts = 0
 	user.LockedUntil = time.Time{}
-	if err := h.updateUser(user); err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, "failed to update user")
-		return
-	}
+	_ = h.updateUser(user)
 
 	token, err := h.jwt.Generate(username)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "failed to generate token")
 		return
 	}
-
 	utils.WriteJSON(w, http.StatusOK, map[string]any{
 		"token": token,
 		"user": models.User{
@@ -565,6 +544,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ==================== MIDDLEWARE ====================
+
 func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
@@ -572,18 +553,18 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 			utils.WriteError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-
 		token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
 		claims, err := h.jwt.Validate(token)
 		if err != nil {
 			utils.WriteError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-
 		r.Header.Set("X-User", claims.Subject)
 		next.ServeHTTP(w, r)
 	})
 }
+
+// ==================== DEPLOYMENT HANDLERS ====================
 
 func (h *Handler) ListDeployments(w http.ResponseWriter, _ *http.Request) {
 	deployments := h.runtime.List()
@@ -629,12 +610,10 @@ func (h *Handler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
 	if strings.TrimSpace(req.Repository) == "" {
-		utils.WriteError(w, http.StatusBadRequest, "repository is required (owner/repo or github url)")
+		utils.WriteError(w, http.StatusBadRequest, "repository is required (owner/repo or GitHub URL)")
 		return
 	}
-
 	if strings.TrimSpace(req.Branch) == "" {
 		req.Branch = "main"
 	}
@@ -649,9 +628,9 @@ func (h *Handler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestedBy := strings.TrimSpace(r.Header.Get("X-User"))
-	created, createErr := h.runtime.Create(req.Repository, req.Branch, customURL, requestedBy)
-	if createErr != nil {
-		utils.WriteError(w, http.StatusBadRequest, createErr.Error())
+	created, err := h.runtime.Create(req.Repository, req.Branch, customURL, requestedBy)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	h.metrics.DeploymentsCreated.Inc()
@@ -664,20 +643,30 @@ func (h *Handler) SearchRepositories(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "query is required")
 		return
 	}
-
 	repos, err := h.repos.Search(r.Context(), query)
 	if err != nil {
 		utils.WriteError(w, http.StatusBadGateway, "failed to fetch repositories")
 		return
 	}
-
 	utils.WriteJSON(w, http.StatusOK, map[string]any{"items": repos})
 }
+
+// ==================== WEBSOCKET ====================
+
+func (h *Handler) WebSocket(w http.ResponseWriter, r *http.Request) {
+	if h.wsHub == nil {
+		utils.WriteError(w, http.StatusServiceUnavailable, "websocket hub unavailable")
+		return
+	}
+	websocket.ServeWS(h.wsHub, w, r)
+}
+
+// ==================== VALIDATION & CRYPTO ====================
 
 func validateUsername(username string) error {
 	re := regexp.MustCompile(`^[a-zA-Z0-9_]{3,30}$`)
 	if !re.MatchString(username) {
-		return fmt.Errorf("username must be 3-30 chars and contain only letters, numbers, or underscores")
+		return fmt.Errorf("username must be 3-30 chars: letters, numbers, underscores only")
 	}
 	return nil
 }
@@ -714,15 +703,11 @@ func validatePassword(password string) error {
 }
 
 func newVerificationCode() string {
-	n, err := rand.Int(rand.Reader, bigInt(900000))
+	n, err := rand.Int(rand.Reader, big.NewInt(900000))
 	if err != nil {
 		return "123456"
 	}
 	return fmt.Sprintf("%06d", n.Int64()+100000)
-}
-
-func bigInt(v int64) *big.Int {
-	return big.NewInt(v)
 }
 
 func hashPassword(password string) ([]byte, error) {

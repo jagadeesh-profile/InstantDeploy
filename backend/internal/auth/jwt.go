@@ -36,11 +36,9 @@ func (j *JWTManager) Validate(token string) (*jwt.RegisteredClaims, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	claims, ok := parsed.Claims.(*jwt.RegisteredClaims)
 	if !ok || !parsed.Valid {
 		return nil, jwt.ErrTokenInvalidClaims
 	}
-
 	return claims, nil
 }

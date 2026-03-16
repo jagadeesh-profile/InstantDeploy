@@ -25,17 +25,14 @@ func NewRouter(handler *Handler, metrics *monitoring.Metrics) http.Handler {
 		utils.WriteJSON(w, http.StatusNotFound, map[string]any{
 			"error":   "not_found",
 			"path":    req.URL.Path,
-			"message": "route not found",
-			"hint":    "use /api/v1 for endpoint discovery",
+			"message": "route not found — use /api/v1 for endpoint discovery",
 		})
 	})
-
 	r.MethodNotAllowed(func(w http.ResponseWriter, req *http.Request) {
 		utils.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{
-			"error":   "method_not_allowed",
-			"path":    req.URL.Path,
-			"method":  req.Method,
-			"message": "method not allowed for this route",
+			"error":  "method_not_allowed",
+			"path":   req.URL.Path,
+			"method": req.Method,
 		})
 	})
 
@@ -47,6 +44,7 @@ func NewRouter(handler *Handler, metrics *monitoring.Metrics) http.Handler {
 	r.Group(func(rt chi.Router) {
 		rt.Use(middleware.Timeout(60 * time.Second))
 
+		// Public endpoints
 		rt.Get("/health", handler.Health)
 		rt.Get("/api/health", handler.Health)
 		rt.Get("/api/v1/health", handler.Health)
@@ -57,9 +55,9 @@ func NewRouter(handler *Handler, metrics *monitoring.Metrics) http.Handler {
 		rt.Post("/api/v1/auth/login", handler.Login)
 		rt.Get("/metrics", promhttp.Handler().ServeHTTP)
 
+		// Protected endpoints
 		rt.Route("/api/v1", func(api chi.Router) {
 			api.Get("/", handler.APIRoot)
-
 			api.Group(func(private chi.Router) {
 				private.Use(handler.AuthMiddleware)
 				private.Get("/runtime/stats", handler.RuntimeStats)

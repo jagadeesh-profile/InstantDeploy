@@ -1,160 +1,85 @@
 # InstantDeploy
 
-InstantDeploy is a mobile runtime platform with:
+Deploy any GitHub repository to a local Docker container in seconds.
 
-- Go backend API for auth, deployments, repository search, and metrics
-- React dashboard for creating and viewing deployments
-- SwiftUI iOS client skeleton
-- Docker-based infrastructure with PostgreSQL, Redis, Prometheus, Grafana, and Loki
-
-## Project Structure
+## Architecture
 
 ```
-InstantDeploy/
-├── backend/
-├── frontend/
-├── ios/
-├── infrastructure/
-├── scripts/
-└── README.md
+Browser / iOS
+     │
+     ▼
+React frontend  (Vite · Tailwind · Zustand)   port 5173
+     │  REST + WebSocket
+     ▼
+Go backend                                     port 8080
+  ├── chi router + JWT auth
+  ├── Runtime manager
+  │     ├── SmartDetector   – detects language/framework
+  │     ├── BuildFixer      – removes problematic plugins
+  │     └── DockerfileGenerator – generates optimised Dockerfiles
+  ├── WebSocket hub  – real-time build log streaming
+  └── Prometheus metrics
+     │
+     ├── PostgreSQL  (deployments, logs, users)
+     ├── Redis       (durable build queue)
+     └── Docker daemon (container builds & runs)
 ```
 
-## Quick Start
-
-### 1) Run with Docker
-
-From repository root:
+## Quick start
 
 ```bash
 docker compose -f infrastructure/docker-compose.yml up --build
 ```
 
-### 2) Access Services
+| Service    | URL                        |
+|------------|----------------------------|
+| Frontend   | http://localhost:5173       |
+| Backend    | http://localhost:8080       |
+| Prometheus | http://localhost:9090       |
+| Grafana    | http://localhost:3000 (admin/admin) |
 
-- Frontend: http://localhost:5173
-- Backend API: http://localhost:8080
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000 (admin / admin)
-- Loki: http://localhost:3100
+## Demo credentials
 
-## Backend API Endpoints
+| Username | Password  |
+|----------|-----------|
+| `demo`   | `Demo123!` |
 
-- `GET /api/v1/health`
-- `GET /api/v1/runtime/stats` (Bearer token required)
-- `POST /api/v1/auth/signup`
-- `POST /api/v1/auth/login`
-- `GET /api/v1/deployments` (Bearer token required)
-- `POST /api/v1/deployments` (Bearer token required)
-- `GET /api/v1/repositories?query=...` (Bearer token required)
-- `GET /metrics`
-
-### Demo Login
-
-Pre-seeded demo account:
-
-```json
-{
-	"username": "demo",
-	"password": "demo123"
-}
-```
-
-### Signup + Custom URL Deployment Demo
-
-1. Open frontend: `http://localhost:5173`
-2. In Authentication panel:
-	 - Select `Sign Up`
-	 - Enter username and password (minimum 6 chars)
-	 - Confirm password and submit
-3. App will auto-login after signup.
-4. In New Deployment panel:
-	 - Enter repository (example: `octocat/Hello-World`)
-	 - Enter branch (example: `main`)
-	 - Enter deployment URL (example: `https://myapp.example.com`)
-	 - Click `Deploy Now`
-5. New deployment appears in the Deployments list with your provided URL.
-
-### API Demo (curl)
-
-Signup:
+## Local development (without Docker)
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/auth/signup \
-	-H "Content-Type: application/json" \
-	-d '{"username":"alice","password":"alice123"}'
+# Start dependencies only
+docker compose -f infrastructure/docker-compose.yml up postgres redis -d
+
+# Backend
+cd backend
+cp .env.example .env   # edit DATABASE_URL / REDIS_ADDR to localhost
+go run ./cmd/server
+
+# Frontend (separate terminal)
+cd frontend
+npm install
+npm run dev
 ```
 
-Login:
+## Supported project types (auto-detected)
 
-```bash
-curl -X POST http://localhost:8081/api/v1/auth/login \
-	-H "Content-Type: application/json" \
-	-d '{"username":"alice","password":"alice123"}'
-```
+| Language   | Frameworks detected                                    |
+|------------|--------------------------------------------------------|
+| Java       | Spring Boot (Gradle & Maven), generic Gradle/Maven     |
+| Node.js    | Next.js, Nuxt, Vite, CRA, Express, NestJS, Fastify     |
+| Python     | Django, FastAPI, Flask, Streamlit, generic             |
+| Go         | Gin, Fiber, Echo, generic                              |
+| Rust       | Actix, Rocket, Warp, generic                           |
+| PHP        | Laravel, Symfony, generic                              |
+| Ruby       | Rails, Sinatra, generic                                |
+| .NET       | ASP.NET Core                                           |
+| Static     | HTML/CSS/JS (served via Nginx)                         |
 
-Create deployment with custom URL:
+## Password requirements
 
-```bash
-curl -X POST http://localhost:8081/api/v1/deployments \
-	-H "Content-Type: application/json" \
-	-H "Authorization: Bearer <TOKEN>" \
-	-d '{"repository":"octocat/Hello-World","branch":"main","url":"https://myapp.example.com"}'
-```
+Passwords must be 8+ characters with at least one uppercase, one lowercase,
+one digit, and one special character (e.g. `Demo123!`).
 
-## Scripts
+## Environment variables
 
-- `scripts/setup.sh`: install frontend dependencies
-- `scripts/start-dev.sh`: start the full stack with Docker Compose
-- `scripts/start-local-dev.ps1`: start local backend + frontend on Windows (with Redis/Postgres dependencies)
-- `scripts/stop-local-dev.ps1`: stop local backend + frontend started by the PowerShell script
-- `scripts/local-dev.ps1`: single Windows entrypoint for `start`, `stop`, `status`, and `logs`
-- `scripts/deploy-all.ps1`: deploy full stack to local Docker, Kubernetes, or both
-- `scripts/seed-db.sql`: seed PostgreSQL with sample deployment
-
-### One-Command Deploy (Windows)
-
-From repository root:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\deploy-all.ps1 -Target all
-```
-
-Kubernetes only:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\deploy-all.ps1 -Target k8s
-```
-
-Local Docker only:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\deploy-all.ps1 -Target local
-```
-
-### Windows Local Dev
-
-From repository root:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-local-dev.ps1
-```
-
-Stop local backend/frontend:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\stop-local-dev.ps1
-```
-
-Or use the single wrapper command:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\local-dev.ps1 -Action start
-powershell -ExecutionPolicy Bypass -File .\scripts\local-dev.ps1 -Action status
-powershell -ExecutionPolicy Bypass -File .\scripts\local-dev.ps1 -Action logs -Service backend -Tail 60
-powershell -ExecutionPolicy Bypass -File .\scripts\local-dev.ps1 -Action stop
-```
-
-## Notes
-
-- Backend runtime supports real project detection, build-file fixups, and generated Dockerfiles across supported stacks.
-- Set `GITHUB_TOKEN` in backend environment to avoid GitHub API rate limits.
+See `backend/.env.example` for all available configuration.

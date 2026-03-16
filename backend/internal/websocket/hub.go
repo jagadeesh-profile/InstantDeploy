@@ -9,9 +9,9 @@ import (
 )
 
 type Message struct {
-	Type      string      `json:"type"`
-	Payload   interface{} `json:"payload"`
-	Timestamp time.Time   `json:"timestamp"`
+	Type      string `json:"type"`
+	Payload   any    `json:"payload"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type Hub struct {
@@ -57,7 +57,7 @@ func (h *Hub) Run() {
 			if err != nil {
 				continue
 			}
-			stale := make([]*Client, 0)
+			var stale []*Client
 			h.mu.RLock()
 			for client := range h.clients {
 				select {
@@ -81,10 +81,8 @@ func (h *Hub) Run() {
 	}
 }
 
-// sendToUser delivers data only to clients whose userID matches.
-// Stale clients (full send buffer) are collected and cleaned up.
 func (h *Hub) sendToUser(userID string, data []byte) {
-	stale := make([]*Client, 0)
+	var stale []*Client
 	h.mu.RLock()
 	for client := range h.clients {
 		if client.userID != userID {
@@ -109,49 +107,44 @@ func (h *Hub) sendToUser(userID string, data []byte) {
 	}
 }
 
-// BroadcastDeploymentUpdate sends a status event only to the owning user's clients.
-// If userID is empty the event is broadcast to every connected client (backwards-compat).
-func (h *Hub) BroadcastDeploymentUpdate(userID, deploymentID, status string, details interface{}) {
+func (h *Hub) BroadcastDeploymentUpdate(userID, deploymentID, status string, details any) {
 	msg := Message{
 		Type: "deployment_status",
-		Payload: map[string]interface{}{
+		Payload: map[string]any{
 			"deployment_id": deploymentID,
 			"status":        status,
 			"details":       details,
 		},
 		Timestamp: time.Now().UTC(),
 	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return
-	}
 	if userID == "" {
 		h.broadcast <- msg
+		return
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
 		return
 	}
 	go h.sendToUser(userID, data)
 }
 
-// BroadcastLog sends a log event only to the owning user's clients.
-// If userID is empty the event reaches every connected client.
 func (h *Hub) BroadcastLog(userID, deploymentID, level, message string) {
 	msg := Message{
 		Type: "deployment_log",
-		Payload: map[string]interface{}{
+		Payload: map[string]any{
 			"deployment_id": deploymentID,
 			"level":         level,
 			"message":       message,
 		},
 		Timestamp: time.Now().UTC(),
 	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return
-	}
 	if userID == "" {
 		h.broadcast <- msg
 		return
 	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
 	go h.sendToUser(userID, data)
 }
-

@@ -3,8 +3,8 @@ package monitoring
 import (
 	"bufio"
 	"fmt"
-	"net/http"
 	"net"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -13,8 +13,8 @@ import (
 )
 
 type Metrics struct {
-	HTTPRequestsTotal *prometheus.CounterVec
-	HTTPRequestTime   *prometheus.HistogramVec
+	HTTPRequestsTotal  *prometheus.CounterVec
+	HTTPRequestTime    *prometheus.HistogramVec
 	DeploymentsCreated prometheus.Counter
 }
 
@@ -40,9 +40,7 @@ func (m *Metrics) HTTPMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
 		next.ServeHTTP(rw, r)
-
 		path := r.URL.Path
 		status := strconv.Itoa(rw.statusCode)
 		m.HTTPRequestsTotal.WithLabelValues(r.Method, path, status).Inc()

@@ -18,10 +18,8 @@ type GitHubClient struct {
 
 func NewGitHubClient(token string) *GitHubClient {
 	return &GitHubClient{
-		token: token,
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+		token:  token,
+		client: &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
@@ -65,6 +63,5 @@ func (g *GitHubClient) Search(ctx context.Context, query string) ([]models.Repos
 			URL:         item.HTMLURL,
 		})
 	}
-
 	return out, nil
 }

@@ -25,16 +25,13 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-
 	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
-
 	client := &Client{
 		hub:    hub,
 		conn:   conn,
 		send:   make(chan []byte, 256),
 		userID: userID,
 	}
-
 	hub.register <- client
 	go client.writePump()
 	go client.readPump()
@@ -45,13 +42,11 @@ func (c *Client) readPump() {
 		c.hub.unregister <- c
 		_ = c.conn.Close()
 	}()
-
 	c.conn.SetReadLimit(1024)
 	_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	c.conn.SetPongHandler(func(string) error {
 		return c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	})
-
 	for {
 		if _, _, err := c.conn.ReadMessage(); err != nil {
 			return
@@ -65,7 +60,6 @@ func (c *Client) writePump() {
 		ticker.Stop()
 		_ = c.conn.Close()
 	}()
-
 	for {
 		select {
 		case message, ok := <-c.send:

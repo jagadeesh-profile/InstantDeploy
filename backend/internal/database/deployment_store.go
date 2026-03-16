@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS deployments (
     image TEXT NOT NULL DEFAULT '',
     container TEXT NOT NULL DEFAULT '',
     error TEXT NOT NULL DEFAULT '',
-    created_at TIMESTAMP NOT NULL
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 ALTER TABLE deployments ADD COLUMN IF NOT EXISTS local_url TEXT NOT NULL DEFAULT '';
@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS deployment_logs (
 CREATE INDEX IF NOT EXISTS idx_deployment_logs_deployment_id ON deployment_logs(deployment_id);
 CREATE INDEX IF NOT EXISTS idx_deployment_logs_time ON deployment_logs(time);
 `
-
 	_, err := s.pool.Exec(ctx, schema)
 	if err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
@@ -72,8 +71,7 @@ func (s *DeploymentStore) ListDeployments() ([]models.Deployment, error) {
 
 	rows, err := s.pool.Query(ctx, `
 SELECT id, repository, branch, status, url, local_url, repo_url, image, container, error, created_at
-FROM deployments
-ORDER BY created_at DESC`)
+FROM deployments ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -82,27 +80,13 @@ ORDER BY created_at DESC`)
 	items := make([]models.Deployment, 0)
 	for rows.Next() {
 		var d models.Deployment
-		if scanErr := rows.Scan(
-			&d.ID,
-			&d.Repository,
-			&d.Branch,
-			&d.Status,
-			&d.URL,
-			&d.LocalURL,
-			&d.RepoURL,
-			&d.Image,
-			&d.Container,
-			&d.Error,
-			&d.CreatedAt,
-		); scanErr != nil {
+		if scanErr := rows.Scan(&d.ID, &d.Repository, &d.Branch, &d.Status, &d.URL,
+			&d.LocalURL, &d.RepoURL, &d.Image, &d.Container, &d.Error, &d.CreatedAt); scanErr != nil {
 			return nil, scanErr
 		}
 		items = append(items, d)
 	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
 func (s *DeploymentStore) ListLogsByDeployment() (map[string][]models.DeploymentLog, error) {
@@ -110,9 +94,7 @@ func (s *DeploymentStore) ListLogsByDeployment() (map[string][]models.Deployment
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, `
-SELECT deployment_id, time, level, message
-FROM deployment_logs
-ORDER BY time ASC`)
+SELECT deployment_id, time, level, message FROM deployment_logs ORDER BY time ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -121,16 +103,13 @@ ORDER BY time ASC`)
 	logsByDeployment := make(map[string][]models.DeploymentLog)
 	for rows.Next() {
 		var deploymentID string
-		var log models.DeploymentLog
-		if scanErr := rows.Scan(&deploymentID, &log.Time, &log.Level, &log.Message); scanErr != nil {
+		var l models.DeploymentLog
+		if scanErr := rows.Scan(&deploymentID, &l.Time, &l.Level, &l.Message); scanErr != nil {
 			return nil, scanErr
 		}
-		logsByDeployment[deploymentID] = append(logsByDeployment[deploymentID], log)
+		logsByDeployment[deploymentID] = append(logsByDeployment[deploymentID], l)
 	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	return logsByDeployment, nil
+	return logsByDeployment, rows.Err()
 }
 
 func (s *DeploymentStore) UpsertDeployment(d models.Deployment) error {
@@ -140,38 +119,22 @@ func (s *DeploymentStore) UpsertDeployment(d models.Deployment) error {
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO deployments (id, repository, branch, status, url, local_url, repo_url, image, container, error, created_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-ON CONFLICT (id) DO UPDATE
-SET repository = EXCLUDED.repository,
-    branch = EXCLUDED.branch,
-    status = EXCLUDED.status,
-    url = EXCLUDED.url,
-    local_url = EXCLUDED.local_url,
-    repo_url = EXCLUDED.repo_url,
-    image = EXCLUDED.image,
-    container = EXCLUDED.container,
-    error = EXCLUDED.error`,
-		d.ID,
-		d.Repository,
-		d.Branch,
-		d.Status,
-		d.URL,
-		d.LocalURL,
-		d.RepoURL,
-		d.Image,
-		d.Container,
-		d.Error,
-		d.CreatedAt,
-	)
+ON CONFLICT (id) DO UPDATE SET
+    repository=EXCLUDED.repository, branch=EXCLUDED.branch, status=EXCLUDED.status,
+    url=EXCLUDED.url, local_url=EXCLUDED.local_url, repo_url=EXCLUDED.repo_url,
+    image=EXCLUDED.image, container=EXCLUDED.container, error=EXCLUDED.error`,
+		d.ID, d.Repository, d.Branch, d.Status, d.URL, d.LocalURL, d.RepoURL,
+		d.Image, d.Container, d.Error, d.CreatedAt)
 	return err
 }
 
-func (s *DeploymentStore) AppendLog(deploymentID string, log models.DeploymentLog) error {
+func (s *DeploymentStore) AppendLog(deploymentID string, l models.DeploymentLog) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx, `
-INSERT INTO deployment_logs (deployment_id, time, level, message)
-VALUES ($1, $2, $3, $4)`, deploymentID, log.Time, log.Level, log.Message)
+INSERT INTO deployment_logs (deployment_id, time, level, message) VALUES ($1,$2,$3,$4)`,
+		deploymentID, l.Time, l.Level, l.Message)
 	return err
 }
 
@@ -182,10 +145,9 @@ func (s *DeploymentStore) GetDeployment(id string) (models.Deployment, bool, err
 	var d models.Deployment
 	err := s.pool.QueryRow(ctx, `
 SELECT id, repository, branch, status, url, local_url, repo_url, image, container, error, created_at
-FROM deployments WHERE id = $1`, id).Scan(
+FROM deployments WHERE id=$1`, id).Scan(
 		&d.ID, &d.Repository, &d.Branch, &d.Status, &d.URL,
-		&d.LocalURL, &d.RepoURL, &d.Image, &d.Container, &d.Error, &d.CreatedAt,
-	)
+		&d.LocalURL, &d.RepoURL, &d.Image, &d.Container, &d.Error, &d.CreatedAt)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
 			return models.Deployment{}, false, nil
@@ -195,10 +157,9 @@ FROM deployments WHERE id = $1`, id).Scan(
 	return d, true, nil
 }
 
-func (s *DeploymentStore) DeleteDeployment(deploymentID string) error {
+func (s *DeploymentStore) DeleteDeployment(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_, err := s.pool.Exec(ctx, `DELETE FROM deployments WHERE id = $1`, deploymentID)
+	_, err := s.pool.Exec(ctx, `DELETE FROM deployments WHERE id=$1`, id)
 	return err
 }

@@ -20,9 +20,10 @@ func main() {
 	jwtManager := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTExpiryMinutes)
 
 	ctx := context.Background()
+
 	pgPool, dbErr := database.NewPostgresPool(ctx, cfg.DatabaseURL)
 	if dbErr != nil {
-		log.Printf("database unavailable, falling back to in-memory runtime state: %v", dbErr)
+		log.Printf("database unavailable, falling back to in-memory: %v", dbErr)
 	}
 	if pgPool != nil {
 		defer pgPool.Close()
@@ -46,7 +47,7 @@ func main() {
 		userStore = database.NewUserStore(pgPool)
 		if userStore != nil {
 			if err := userStore.EnsureSchema(); err != nil {
-				log.Printf("user persistence schema setup failed, falling back to in-memory auth: %v", err)
+				log.Printf("user schema setup failed, falling back to in-memory auth: %v", err)
 				userStore = nil
 			}
 		}
@@ -61,6 +62,7 @@ func main() {
 	wsHub := websocket.NewHub()
 	go wsHub.Run()
 
+	// Forward runtime events to WebSocket hub
 	subID, events := runtimeManager.Subscribe(512)
 	_ = subID
 	go func() {

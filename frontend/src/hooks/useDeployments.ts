@@ -1,10 +1,5 @@
 import { useCallback, useState } from "react";
-import {
-  createDeployment,
-  deleteDeployment,
-  listDeployments,
-  type Deployment,
-} from "../services/api";
+import { createDeployment, deleteDeployment, listDeployments, type Deployment } from "../services/api";
 
 export function useDeployments() {
   const [items, setItems] = useState<Deployment[]>([]);
@@ -15,38 +10,29 @@ export function useDeployments() {
     setLoading(true);
     setError(null);
     try {
-      const data = await listDeployments();
-      setItems(data);
-    } catch (err) {
+      setItems(await listDeployments());
+    } catch {
       setError("Failed to load deployments");
-      console.error(err);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Apply a status update in-place without a network round-trip.
   const applyStatusUpdate = useCallback((deploymentId: string, status: string) => {
-    setItems((prev) =>
-      prev.map((d) => (d.id === deploymentId ? { ...d, status } : d))
-    );
+    setItems((prev) => prev.map((d) => (d.id === deploymentId ? { ...d, status } : d)));
   }, []);
 
-  const deploy = useCallback(
-    async (repository: string, branch: string, url: string): Promise<boolean> => {
-      setError(null);
-      try {
-        const created = await createDeployment(repository, branch, url);
-        setItems((prev) => [created, ...prev]);
-        return true;
-      } catch (err) {
-        setError("Failed to create deployment");
-        console.error(err);
-        return false;
-      }
-    },
-    []
-  );
+  const deploy = useCallback(async (repository: string, branch: string, url: string): Promise<boolean> => {
+    setError(null);
+    try {
+      const created = await createDeployment(repository, branch, url);
+      setItems((prev) => [created, ...prev]);
+      return true;
+    } catch {
+      setError("Failed to create deployment");
+      return false;
+    }
+  }, []);
 
   const remove = useCallback(async (id: string): Promise<boolean> => {
     setError(null);
@@ -54,9 +40,8 @@ export function useDeployments() {
       await deleteDeployment(id);
       setItems((prev) => prev.filter((d) => d.id !== id));
       return true;
-    } catch (err) {
+    } catch {
       setError("Failed to delete deployment");
-      console.error(err);
       return false;
     }
   }, []);

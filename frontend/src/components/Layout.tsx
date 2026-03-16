@@ -26,7 +26,7 @@ export default function Layout({ children }: LayoutProps) {
   return (
     <div className="min-h-screen bg-gray-50 flex">
       {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col fixed h-full">
+      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col fixed h-full z-10">
         <div className="p-6 border-b border-gray-100">
           <div className="flex items-center gap-2">
             <Rocket className="text-primary-600" size={24} />
@@ -50,16 +50,13 @@ export default function Layout({ children }: LayoutProps) {
           </Link>
         </nav>
 
-        {/* User section */}
         <div className="p-4 border-t border-gray-100">
           <div className="flex items-center gap-3 px-4 py-2 mb-1">
             <div className="w-8 h-8 bg-gradient-to-br from-primary-400 to-secondary-500 rounded-full flex items-center justify-center text-white text-sm font-semibold shrink-0">
               {user?.username?.[0]?.toUpperCase() ?? "U"}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900 truncate">
-                {user?.username ?? "User"}
-              </p>
+              <p className="text-sm font-medium text-gray-900 truncate">{user?.username ?? "User"}</p>
               <p className="text-xs text-gray-500 capitalize">{user?.role ?? "developer"}</p>
             </div>
           </div>

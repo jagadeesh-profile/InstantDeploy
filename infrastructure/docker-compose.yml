@@ -9,16 +9,21 @@ services:
       JWT_EXPIRY_MINUTES: 120
       DATABASE_URL: postgres://instantdeploy_user:instantdeploy_pass@postgres:5432/instantdeploy?sslmode=disable
       REDIS_ADDR: redis:6379
-      BUILD_QUEUE_KEY: instantdeploy:build_queue:docker
+      BUILD_QUEUE_KEY: instantdeploy:build_queue
       BUILD_TIMEOUT: 900
-      MAX_BUILD_RETRIES: 3
+      MAX_BUILD_RETRIES: 2
+      BUILD_WORKERS: 3
     ports:
       - "${BACKEND_HOST_PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - build_cache:/tmp/builds
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
     networks:
       - instantdeploy-network
 
@@ -28,12 +33,11 @@ services:
       args:
         VITE_API_URL: http://localhost:${BACKEND_HOST_PORT:-8080}
     container_name: instantdeploy-frontend
-    environment:
-      VITE_API_URL: http://localhost:${BACKEND_HOST_PORT:-8080}
     ports:
       - "5173:80"
     depends_on:
       - backend
+    restart: unless-stopped
     networks:
       - instantdeploy-network
 
@@ -76,25 +80,13 @@ services:
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: instantdeploy-prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
     depends_on:
       - backend
-    networks:
-      - instantdeploy-network
-
-  loki:
-    image: grafana/loki:3.2.0
-    container_name: instantdeploy-loki
-    command: ["-config.file=/etc/loki/local-config.yaml"]
-    volumes:
-      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
-    ports:
-      - "3100:3100"
     networks:
       - instantdeploy-network
 
@@ -111,7 +103,17 @@ services:
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
     depends_on:
       - prometheus
-      - loki
+    networks:
+      - instantdeploy-network
+
+  loki:
+    image: grafana/loki:3.2.0
+    container_name: instantdeploy-loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+    ports:
+      - "3100:3100"
     networks:
       - instantdeploy-network
 
@@ -122,4 +124,4 @@ networks:
 volumes:
   postgres-data:
   redis-data:
-
+  build_cache:

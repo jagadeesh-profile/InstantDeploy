@@ -1,4 +1,4 @@
-# OS/editor
+# OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
@@ -13,17 +13,17 @@ scripts/.logs/
 scripts/.pids/
 backend/.tmp-*.json
 
-# Environment and secrets
+# Secrets
 .env
 .env.*
 !.env.example
 
-# Node/frontend
+# Node / frontend
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
-# Go/backend
+# Go / backend
 backend/bin/
 backend/coverage.out
 backend/vendor/
@@ -33,5 +33,5 @@ backend/vendor/
 **/build/
 **/out/
 
-# Local tooling
-.antigravity/
+# Backup files created by BuildFixer
+*.backup
