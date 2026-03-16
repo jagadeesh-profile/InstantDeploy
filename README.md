@@ -158,4 +158,3 @@ powershell -ExecutionPolicy Bypass -File .\scripts\local-dev.ps1 -Action stop
 
 - Backend runtime supports real project detection, build-file fixups, and generated Dockerfiles across supported stacks.
 - Set `GITHUB_TOKEN` in backend environment to avoid GitHub API rate limits.
-
