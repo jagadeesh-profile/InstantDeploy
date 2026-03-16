@@ -1,318 +1,1043 @@
 package runtime
 
+
+
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
+
+    "fmt"
+
+    "strings"
+
 )
 
-type DockerfileGenerator struct {
-	logf RuntimeLogger
+
+
+// GenerateDockerfile creates optimized Dockerfile for any project type
+
+func GenerateDockerfile(config *ProjectConfig) (string, error) {
+
+    switch config.Type {
+
+    case "custom":
+
+        return "", nil
+
+
+
+    // Java projects
+
+    case "java-spring-boot-gradle":
+
+        return generateSpringBootGradleDockerfile(config), nil
+
+    case "java-gradle":
+
+        return generateGradleDockerfile(config), nil
+
+    case "java-spring-boot-maven":
+
+        return generateSpringBootMavenDockerfile(config), nil
+
+    case "java-maven":
+
+        return generateMavenDockerfile(config), nil
+
+
+
+    // Node.js projects
+
+    case "node", "node-nextjs", "node-nuxt", "node-vite", "node-cra", "node-express", "node-nestjs":
+
+        return generateNodeDockerfile(config), nil
+
+
+
+    // Python projects
+
+    case "python", "python-django", "python-flask", "python-fastapi", "python-streamlit":
+
+        return generatePythonDockerfile(config), nil
+
+
+
+    // Go projects
+
+    case "go":
+
+        return generateGoDockerfile(config), nil
+
+
+
+    // Rust projects
+
+    case "rust":
+
+        return generateRustDockerfile(config), nil
+
+
+
+    // PHP projects
+
+    case "php", "php-laravel", "php-symfony":
+
+        return generatePHPDockerfile(config), nil
+
+
+
+    // Ruby projects
+
+    case "ruby", "ruby-rails":
+
+        return generateRubyDockerfile(config), nil
+
+
+
+    // .NET projects
+
+    case "dotnet":
+
+        return generateDotNetDockerfile(config), nil
+
+
+
+    // Static
+
+    case "static":
+
+        return generateStaticDockerfile(config), nil
+
+
+
+    default:
+
+        return "", fmt.Errorf("unsupported project type: %s", config.Type)
+
+    }
+
 }
 
-func NewDockerfileGenerator(logf RuntimeLogger) *DockerfileGenerator {
-	return &DockerfileGenerator{logf: logf}
-}
 
-func (g *DockerfileGenerator) Generate(repoDir string, project *DetectedProject) (string, int, error) {
-	if project == nil {
-		return "", 0, fmt.Errorf("project detection returned nil")
-	}
-	if project.ExistingDockerfile != "" {
-		port := project.Port
-		if port == 0 {
-			port = detectExposePortFromDockerfile(project.ExistingDockerfile)
-		}
-		if port == 0 {
-			port = 3000
-		}
-		return project.ExistingDockerfile, port, nil
-	}
 
-	var content string
-	switch project.Kind {
-	case ProjectKindNode:
-		content = g.generateNodeDockerfile(project)
-	case ProjectKindPython:
-		content = g.generatePythonDockerfile(repoDir, project)
-	case ProjectKindGo:
-		content = g.generateGoDockerfile(project)
-	case ProjectKindJavaMaven:
-		content = g.generateMavenDockerfile(project)
-	case ProjectKindJavaGradle:
-		content = g.generateGradleDockerfile(project)
-	case ProjectKindRust:
-		content = g.generateRustDockerfile(project)
-	case ProjectKindPHP:
-		content = g.generatePHPDockerfile(repoDir, project)
-	case ProjectKindRuby:
-		content = g.generateRubyDockerfile(project)
-	case ProjectKindDotNet:
-		content = g.generateDotNetDockerfile(repoDir, project)
-	default:
-		content = g.generateStaticDockerfile(project)
-	}
+// ==================== JAVA DOCKERFILES ====================
 
-	path := filepath.Join(repoDir, "Dockerfile.instantdeploy")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return "", 0, fmt.Errorf("failed to write generated Dockerfile: %w", err)
-	}
-	g.log("info", fmt.Sprintf("Generated Dockerfile for %s", project.Summary))
-	return path, project.Port, nil
-}
 
-func (g *DockerfileGenerator) generateNodeDockerfile(project *DetectedProject) string {
-	if project.StaticOutputDir != "" {
-		return fmt.Sprintf(`FROM %s AS build
+
+func generateSpringBootGradleDockerfile(config *ProjectConfig) string {
+
+    java := getOrDefault(config.Version, "java", "17")
+
+    gradle := getOrDefault(config.Version, "gradle", "8.5")
+
+
+
+    return fmt.Sprintf(`FROM gradle:%s-jdk%s AS build
+
 WORKDIR /app
-COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* bun.lockb* bun.lock* ./
-%s
+
+
+
+# Copy gradle files
+
+COPY build.gradle* settings.gradle* gradlew* gradle.properties* ./
+
+COPY gradle ./gradle 2>/dev/null || true
+
+
+
+# FIX: Remove problematic plugins
+
+RUN if [ -f build.gradle ]; then \
+
+        cp build.gradle build.gradle.backup && \
+
+        sed -i '/com\.palantir\.docker/d' build.gradle && \
+
+        sed -i '/com\.bmuschko\.docker/d' build.gradle && \
+
+        sed -i '/gradle-docker/d' build.gradle && \
+
+        sed -i '/com\.google\.cloud\.tools\.jib/d' build.gradle && \
+
+        echo " Removed docker plugins"; \
+
+    fi
+
+
+
+# Download dependencies
+
+RUN gradle dependencies --no-daemon --refresh-dependencies || true
+
+
+
+# Copy source
+
+COPY src ./src 2>/dev/null || COPY . .
+
+
+
+# Build with fallback strategies
+
+RUN (gradle clean bootJar --no-daemon -x test -x dockerBuild -x docker || \
+
+     gradle clean build --no-daemon -x test -x dockerBuild -x docker || \
+
+     gradle bootJar --no-daemon -x test || \
+
+     gradle build --no-daemon -x test) && \
+
+    find build/libs -name "*.jar" ! -name "*-plain.jar" ! -name "*-sources.jar" -exec cp {} app.jar \;
+
+
+
+# Runtime
+
+FROM eclipse-temurin:%s-jre-alpine
+
+WORKDIR /app
+
+COPY --from=build /app/app.jar app.jar
+
+
+
+EXPOSE %d
+
+
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s \
+
+    CMD wget -q --tries=1 --spider http://localhost:%d/actuator/health || \
+
+        wget -q --tries=1 --spider http://localhost:%d/ || exit 1
+
+
+
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+
+`, gradle, java, java, config.Port, config.Port, config.Port)
+
+}
+
+
+
+func generateGradleDockerfile(config *ProjectConfig) string {
+
+    java := getOrDefault(config.Version, "java", "17")
+
+    gradle := getOrDefault(config.Version, "gradle", "8.5")
+
+
+
+    return fmt.Sprintf(`FROM gradle:%s-jdk%s AS build
+
+WORKDIR /app
+
+
+
+COPY build.gradle* settings.gradle* gradlew* ./
+
+COPY gradle ./gradle 2>/dev/null || true
+
+
+
+RUN gradle dependencies --no-daemon || true
+
+
+
 COPY . .
+
+
+
+RUN (gradle clean build --no-daemon -x test || \
+
+     gradle clean jar --no-daemon -x test || \
+
+     gradle assemble --no-daemon) && \
+
+    find build/libs -name "*.jar" -exec cp {} app.jar \;
+
+
+
+FROM eclipse-temurin:%s-jre-alpine
+
+WORKDIR /app
+
+COPY --from=build /app/app.jar app.jar
+
+
+
+EXPOSE %d
+
+CMD ["java", "-jar", "app.jar"]
+
+`, gradle, java, java, config.Port)
+
+}
+
+
+
+func generateSpringBootMavenDockerfile(config *ProjectConfig) string {
+
+    java := getOrDefault(config.Version, "java", "17")
+
+
+
+    return fmt.Sprintf(`FROM maven:3.9-eclipse-temurin-%s AS build
+
+WORKDIR /app
+
+
+
+COPY pom.xml .
+
+RUN mvn dependency:go-offline -B || true
+
+
+
+COPY src ./src
+
+
+
+RUN mvn clean package -DskipTests -B && \
+
+    cp target/*.jar app.jar
+
+
+
+FROM eclipse-temurin:%s-jre-alpine
+
+WORKDIR /app
+
+COPY --from=build /app/app.jar app.jar
+
+
+
+EXPOSE %d
+
+
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=60s \
+
+    CMD wget -q --spider http://localhost:%d/actuator/health || exit 1
+
+
+
+ENTRYPOINT ["java", "-jar", "app.jar"]
+
+`, java, java, config.Port, config.Port)
+
+}
+
+
+
+func generateMavenDockerfile(config *ProjectConfig) string {
+
+    java := getOrDefault(config.Version, "java", "17")
+
+
+
+    return fmt.Sprintf(`FROM maven:3.9-eclipse-temurin-%s AS build
+
+WORKDIR /app
+
+
+
+COPY pom.xml .
+
+RUN mvn dependency:go-offline -B || true
+
+
+
+COPY . .
+
+RUN mvn clean package -DskipTests -B
+
+
+
+FROM eclipse-temurin:%s-jre-alpine
+
+WORKDIR /app
+
+COPY --from=build /app/target/*.jar app.jar
+
+
+
+EXPOSE %d
+
+CMD ["java", "-jar", "app.jar"]
+
+`, java, java, config.Port)
+
+}
+
+
+
+// ==================== NODE.JS DOCKERFILES ====================
+
+
+
+func generateNodeDockerfile(config *ProjectConfig) string {
+
+    node := getOrDefault(config.Version, "node", "20")
+
+    pkgMgr := config.BuildTool
+
+    if pkgMgr == "" {
+
+        pkgMgr = "npm"
+
+    }
+
+
+
+    installCmd := map[string]string{
+
+        "npm":  "npm ci --only=production || npm install --production",
+
+        "yarn": "yarn install --frozen-lockfile --production || yarn install --production",
+
+        "pnpm": "pnpm install --frozen-lockfile --prod || pnpm install --prod",
+
+        "bun":  "bun install --production",
+
+    }[pkgMgr]
+
+
+
+    buildCmd := ""
+
+    if config.BuildCommand != "" {
+
+        buildCmd = fmt.Sprintf("RUN %s run build || true", pkgMgr)
+
+    }
+
+
+
+    startCmd := config.StartCommand
+
+    if startCmd == "" {
+
+        startCmd = "start"
+
+    }
+
+
+
+    // Special handling for frameworks
+
+    if config.Framework == "nextjs" {
+
+        return generateNextJSDockerfile(config)
+
+    }
+
+
+
+    return fmt.Sprintf(`FROM node:%s-alpine AS build
+
+WORKDIR /app
+
+
+
+# Install dependencies
+
+COPY package*.json yarn.lock* pnpm-lock.yaml* bun.lockb* ./
+
 RUN %s
 
-FROM nginx:1.27-alpine
-COPY --from=build /app/%s /usr/share/nginx/html
-EXPOSE 80
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1
-CMD ["nginx", "-g", "daemon off;"]
-`, nodeBuilderImage(project.PackageManager), nodeInstallCommand(project.PackageManager), safeNodeBuildCommand(project), project.StaticOutputDir)
-	}
 
-	return fmt.Sprintf(`FROM %s AS build
-WORKDIR /app
-COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* bun.lockb* bun.lock* ./
-%s
+
+# Copy source
+
 COPY . .
+
+
+
+# Build
+
 %s
 
-FROM %s
+
+
+# Production
+
+FROM node:%s-alpine
+
 WORKDIR /app
+
+
+
 ENV NODE_ENV=production
-ENV HOST=0.0.0.0
-ENV PORT=%d
-COPY --from=build /app /app
+
+
+
+COPY --from=build /app/node_modules ./node_modules
+
+COPY --from=build /app ./
+
+
+
 EXPOSE %d
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:%d%s || exit 1
-CMD ["sh", "-c", "%s"]
-`, nodeBuilderImage(project.PackageManager), nodeInstallCommand(project.PackageManager), optionalRunLine(project.BuildCommand), nodeRuntimeImage(project.PackageManager), project.Port, project.Port, project.Port, healthPath(project), project.StartCommand)
+
+
+
+HEALTHCHECK --interval=30s --timeout=3s \
+
+    CMD wget -q --spider http://localhost:%d/ || exit 1
+
+
+
+CMD ["%s", "run", "%s"]
+
+`, node, installCmd, buildCmd, node, config.Port, config.Port, pkgMgr, startCmd)
+
 }
 
-func (g *DockerfileGenerator) generatePythonDockerfile(repoDir string, project *DetectedProject) string {
-	installCmd := `COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt`
-	if fileExists(filepath.Join(repoDir, "pyproject.toml")) || fileExists(filepath.Join(repoDir, "Pipfile")) {
-		installCmd = `COPY requirements.txt* pyproject.toml* poetry.lock* Pipfile* Pipfile.lock* ./
-RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi; \
-    if [ -f pyproject.toml ]; then pip install --no-cache-dir .; fi`
-	}
-	return fmt.Sprintf(`FROM python:%s-slim
+
+
+func generateNextJSDockerfile(config *ProjectConfig) string {
+
+    node := getOrDefault(config.Version, "node", "20")
+
+    pkgMgr := config.BuildTool
+
+    if pkgMgr == "" {
+
+        pkgMgr = "npm"
+
+    }
+
+
+
+    return fmt.Sprintf(`FROM node:%s-alpine AS deps
+
 WORKDIR /app
-ENV PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y --no-install-recommends curl build-essential && rm -rf /var/lib/apt/lists/*
-%s
+
+COPY package*.json ./
+
+RUN %s install --frozen-lockfile || %s install
+
+
+
+FROM node:%s-alpine AS build
+
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+
 COPY . .
-EXPOSE %d
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD curl -fsS http://127.0.0.1:%d%s || exit 1
-CMD ["sh", "-c", "%s"]
-`, project.RuntimeVersion, installCmd, project.Port, project.Port, healthPath(project), project.StartCommand)
+
+RUN %s run build
+
+
+
+FROM node:%s-alpine AS runner
+
+WORKDIR /app
+
+
+
+ENV NODE_ENV=production
+
+
+
+RUN addgroup --system --gid 1001 nodejs && \
+
+    adduser --system --uid 1001 nextjs
+
+
+
+COPY --from=build /app/public ./public
+
+COPY --from=build --chown=nextjs:nodejs /app/.next/standalone ./
+
+COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+
+
+USER nextjs
+
+
+
+EXPOSE 3000
+
+
+
+CMD ["node", "server.js"]
+
+`, node, pkgMgr, pkgMgr, node, pkgMgr, node)
+
 }
 
-func (g *DockerfileGenerator) generateGoDockerfile(project *DetectedProject) string {
-	entry := firstNonEmpty(project.Entrypoint, "server")
-	return fmt.Sprintf(`FROM golang:%s-alpine AS build
+
+
+// ==================== PYTHON DOCKERFILES ====================
+
+
+
+func generatePythonDockerfile(config *ProjectConfig) string {
+
+    python := getOrDefault(config.Version, "python", "3.11")
+
+
+
+    startCmd := "python app.py"
+
+    if config.Framework == "django" {
+
+        startCmd = "python manage.py runserver 0.0.0.0:8000"
+
+    } else if config.Framework == "fastapi" {
+
+        startCmd = "uvicorn main:app --host 0.0.0.0 --port 8000"
+
+    } else if config.Framework == "flask" {
+
+        startCmd = "flask run --host=0.0.0.0 --port=5000"
+
+    } else if config.Framework == "streamlit" {
+
+        startCmd = "streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
+
+    }
+
+
+
+    return fmt.Sprintf(`FROM python:%s-slim
+
 WORKDIR /app
-COPY go.mod go.sum* ./
+
+
+
+# Install dependencies
+
+COPY requirements.txt* Pipfile* pyproject.toml* poetry.lock* ./
+
+
+
+RUN pip install --no-cache-dir --upgrade pip && \
+
+    (pip install --no-cache-dir -r requirements.txt || \
+
+     (pip install pipenv && pipenv install --system --deploy) || \
+
+     (pip install poetry && poetry install --no-dev) || \
+
+     true)
+
+
+
+# Copy application
+
+COPY . .
+
+
+
+EXPOSE %d
+
+
+
+HEALTHCHECK --interval=30s --timeout=3s \
+
+    CMD curl -f http://localhost:%d/ || exit 1
+
+
+
+CMD %s
+
+`, python, config.Port, config.Port, startCmd)
+
+}
+
+
+
+// ==================== GO DOCKERFILES ====================
+
+
+
+func generateGoDockerfile(config *ProjectConfig) string {
+
+    goVersion := getOrDefault(config.Version, "go", "1.21")
+
+
+
+    return fmt.Sprintf(`FROM golang:%s-alpine AS builder
+
+WORKDIR /app
+
+
+
+# Download dependencies
+
+COPY go.* ./
+
 RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /tmp/%s .
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates wget
-COPY --from=build /tmp/%s /usr/local/bin/app
+
+
+# Build
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
+
+
+
+# Runtime
+
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+
+
+WORKDIR /root/
+
+COPY --from=builder /app/main .
+
+
+
 EXPOSE %d
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:%d%s || exit 1
-CMD ["/usr/local/bin/app"]
-`, project.RuntimeVersion, entry, entry, project.Port, project.Port, healthPath(project))
+
+
+
+HEALTHCHECK --interval=30s --timeout=3s \
+
+    CMD wget -q --spider http://localhost:%d/ || exit 1
+
+
+
+CMD ["./main"]
+
+`, goVersion, config.Port, config.Port)
+
 }
 
-func (g *DockerfileGenerator) generateMavenDockerfile(project *DetectedProject) string {
-	javaVersion := sanitizeJavaVersion(project.RuntimeVersion)
-	return fmt.Sprintf(`FROM maven:3.9-eclipse-temurin-%s AS build
+
+
+// ==================== RUST DOCKERFILES ====================
+
+
+
+func generateRustDockerfile(config *ProjectConfig) string {
+
+    return fmt.Sprintf(`FROM rust:1.75-alpine AS builder
+
 WORKDIR /app
+
+
+
+RUN apk add --no-cache musl-dev
+
+
+
+COPY Cargo.* ./
+
+RUN mkdir src && \
+
+    echo "fn main() {}" > src/main.rs && \
+
+    cargo build --release || true
+
+
+
 COPY . .
-RUN mvn -q -DskipTests package
 
-FROM eclipse-temurin:%s-jre
-WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
-COPY --from=build /app/target/*.jar /app/app.jar
-EXPOSE %d
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD curl -fsS http://127.0.0.1:%d%s || exit 1
-CMD ["java", "-jar", "/app/app.jar"]
-`, javaVersion, javaVersion, project.Port, project.Port, healthPath(project))
-}
-
-func (g *DockerfileGenerator) generateGradleDockerfile(project *DetectedProject) string {
-	javaVersion := sanitizeJavaVersion(project.RuntimeVersion)
-	gradleCmd := `gradle --no-daemon clean bootJar --init-script /app/.instantdeploy.init.gradle || gradle --no-daemon clean build --init-script /app/.instantdeploy.init.gradle`
-	if project.JavaUseWrapper {
-		gradleCmd = `chmod +x ./gradlew && ./gradlew --no-daemon clean bootJar --init-script /app/.instantdeploy.init.gradle || ./gradlew --no-daemon clean build --init-script /app/.instantdeploy.init.gradle`
-	}
-	return fmt.Sprintf(`FROM gradle:8.7-jdk%s AS build
-WORKDIR /app
-COPY . .
-RUN %s
-
-FROM eclipse-temurin:%s-jre
-WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
-COPY --from=build /app/build/libs/*.jar /app/app.jar
-EXPOSE %d
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD curl -fsS http://127.0.0.1:%d%s || exit 1
-CMD ["java", "-jar", "/app/app.jar"]
-`, javaVersion, gradleCmd, javaVersion, project.Port, project.Port, healthPath(project))
-}
-
-func (g *DockerfileGenerator) generateRustDockerfile(project *DetectedProject) string {
-	entry := firstNonEmpty(project.Entrypoint, "app")
-	return fmt.Sprintf(`FROM rust:%s-slim AS build
-WORKDIR /app
-COPY . .
 RUN cargo build --release
 
-FROM debian:bookworm-slim
-WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
-COPY --from=build /app/target/release/%s /usr/local/bin/app
+
+
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+
+
+WORKDIR /root/
+
+COPY --from=builder /app/target/release/* .
+
+
+
 EXPOSE %d
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD curl -fsS http://127.0.0.1:%d%s || exit 1
-CMD ["/usr/local/bin/app"]
-`, project.RuntimeVersion, entry, project.Port, project.Port, healthPath(project))
+
+CMD ["./main"]
+
+`, config.Port)
+
 }
 
-func (g *DockerfileGenerator) generatePHPDockerfile(repoDir string, project *DetectedProject) string {
-	if fileExists(filepath.Join(repoDir, "composer.json")) {
-		return fmt.Sprintf(`FROM composer:2 AS composer
+
+
+// ==================== PHP DOCKERFILES ====================
+
+
+
+func generatePHPDockerfile(config *ProjectConfig) string {
+
+    php := getOrDefault(config.Version, "php", "8.2")
+
+
+
+    if config.Framework == "laravel" {
+
+        return fmt.Sprintf(`FROM php:%s-fpm-alpine AS build
+
 WORKDIR /app
+
+
+
+RUN apk add --no-cache zip unzip git curl
+
+
+
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+
+
 COPY composer.json composer.lock* ./
-RUN composer install --no-interaction --prefer-dist --no-dev
 
-FROM php:%s-cli
-WORKDIR /app
-COPY . .
-COPY --from=composer /app/vendor /app/vendor
-EXPOSE %d
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD php -r 'exit(@file_get_contents("http://127.0.0.1:%d%s") ? 0 : 1);'
-CMD ["sh", "-c", "%s"]
-`, project.RuntimeVersion, project.Port, project.Port, healthPath(project), project.StartCommand)
-	}
+RUN composer install --no-dev --no-scripts --no-autoloader
 
-	return fmt.Sprintf(`FROM composer:2 AS composer
-FROM php:%s-cli
-WORKDIR /app
+
+
 COPY . .
-EXPOSE %d
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD php -r 'exit(@file_get_contents("http://127.0.0.1:%d%s") ? 0 : 1);'
-CMD ["sh", "-c", "%s"]
-`, project.RuntimeVersion, project.Port, project.Port, healthPath(project), project.StartCommand)
+
+RUN composer dump-autoload --optimize
+
+
+
+FROM php:%s-fpm-alpine
+
+WORKDIR /app
+
+
+
+COPY --from=build /app /app
+
+
+
+RUN chown -R www-data:www-data /app/storage /app/bootstrap/cache
+
+
+
+EXPOSE 8000
+
+CMD php artisan serve --host=0.0.0.0 --port=8000
+
+`, php, php)
+
+    }
+
+
+
+    return fmt.Sprintf(`FROM php:%s-apache
+
+WORKDIR /var/www/html
+
+
+
+COPY . .
+
+
+
+RUN chown -R www-data:www-data /var/www/html
+
+
+
+EXPOSE 80
+
+`, php)
+
 }
 
-func (g *DockerfileGenerator) generateRubyDockerfile(project *DetectedProject) string {
-	return fmt.Sprintf(`FROM ruby:%s-slim
+
+
+// ==================== RUBY DOCKERFILES ====================
+
+
+
+func generateRubyDockerfile(config *ProjectConfig) string {
+
+    ruby := getOrDefault(config.Version, "ruby", "3.2")
+
+
+
+    if config.Framework == "rails" {
+
+        return fmt.Sprintf(`FROM ruby:%s-alpine AS build
+
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl && rm -rf /var/lib/apt/lists/*
-COPY Gemfile Gemfile.lock* ./
+
+
+
+RUN apk add --no-cache build-base postgresql-dev nodejs yarn
+
+
+
+COPY Gemfile Gemfile.lock ./
+
+RUN bundle install --without development test
+
+
+
+COPY . .
+
+
+
+RUN bundle exec rails assets:precompile || true
+
+
+
+FROM ruby:%s-alpine
+
+WORKDIR /app
+
+
+
+RUN apk add --no-cache postgresql-client nodejs
+
+
+
+COPY --from=build /usr/local/bundle /usr/local/bundle
+
+COPY --from=build /app /app
+
+
+
+EXPOSE 3000
+
+
+
+CMD ["bundle", "exec", "rails", "server", "-b", "0.0.0.0"]
+
+`, ruby, ruby)
+
+    }
+
+
+
+    return fmt.Sprintf(`FROM ruby:%s-alpine
+
+WORKDIR /app
+
+
+
+COPY Gemfile Gemfile.lock ./
+
 RUN bundle install
+
+
+
 COPY . .
-EXPOSE %d
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD curl -fsS http://127.0.0.1:%d%s || exit 1
-CMD ["sh", "-c", "%s"]
-`, project.RuntimeVersion, project.Port, project.Port, healthPath(project), project.StartCommand)
+
+
+
+EXPOSE 4567
+
+CMD ["bundle", "exec", "ruby", "app.rb"]
+
+`, ruby)
+
 }
 
-func (g *DockerfileGenerator) generateDotNetDockerfile(repoDir string, project *DetectedProject) string {
-	projectFile := strings.TrimSpace(project.DotNetProjectFile)
-	if projectFile == "" {
-		matches, _ := filepath.Glob(filepath.Join(repoDir, "*.csproj"))
-		if len(matches) > 0 {
-			projectFile = filepath.Base(matches[0])
-		}
-	}
-	dll := strings.TrimSuffix(filepath.Base(projectFile), filepath.Ext(projectFile)) + ".dll"
-	return fmt.Sprintf(`FROM mcr.microsoft.com/dotnet/sdk:%s AS build
-WORKDIR /src
+
+
+// ==================== .NET DOCKERFILES ====================
+
+
+
+func generateDotNetDockerfile(config *ProjectConfig) string {
+
+    dotnet := getOrDefault(config.Version, "dotnet", "8.0")
+
+    projectFile := config.BuildFile
+
+
+
+    return fmt.Sprintf(`FROM mcr.microsoft.com/dotnet/sdk:%s AS build
+
+WORKDIR /app
+
+
+
+COPY *.csproj ./
+
+RUN dotnet restore
+
+
+
 COPY . .
-RUN dotnet publish %q -c Release -o /app/publish
+
+RUN dotnet publish -c Release -o out
+
+
 
 FROM mcr.microsoft.com/dotnet/aspnet:%s
+
 WORKDIR /app
-ENV ASPNETCORE_URLS=http://0.0.0.0:%d
-COPY --from=build /app/publish .
-EXPOSE %d
-CMD ["dotnet", %q]
-`, project.RuntimeVersion, projectFile, project.RuntimeVersion, project.Port, project.Port, dll)
+
+COPY --from=build /app/out .
+
+
+
+EXPOSE 5000
+
+CMD ["dotnet", "%s.dll"]
+
+`, dotnet, dotnet, strings.TrimSuffix(projectFile, ".csproj"))
+
 }
 
-func (g *DockerfileGenerator) generateStaticDockerfile(project *DetectedProject) string {
-	return `FROM nginx:1.27-alpine
+
+
+// ==================== STATIC DOCKERFILES ====================
+
+
+
+func generateStaticDockerfile(config *ProjectConfig) string {
+
+    return `FROM nginx:alpine
+
+
+
 COPY . /usr/share/nginx/html
+
+
+
 EXPOSE 80
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1
+
+
+
+HEALTHCHECK --interval=30s --timeout=3s \
+
+    CMD wget -q --spider http://localhost:80/ || exit 1
+
+
+
 CMD ["nginx", "-g", "daemon off;"]
+
 `
+
 }
 
-func nodeBuilderImage(packageManager string) string {
-	if packageManager == "bun" {
-		return "oven/bun:1.1"
-	}
-	return "node:20-alpine"
-}
 
-func nodeRuntimeImage(packageManager string) string {
-	if packageManager == "bun" {
-		return "oven/bun:1.1"
-	}
-	return "node:20-alpine"
-}
 
-func nodeInstallCommand(packageManager string) string {
-	switch packageManager {
-	case "pnpm":
-		return "RUN corepack enable && (pnpm install --frozen-lockfile || pnpm install)"
-	case "yarn":
-		return "RUN corepack enable && (yarn install --frozen-lockfile || yarn install)"
-	case "bun":
-		return "RUN bun install --frozen-lockfile || bun install"
-	default:
-		return "RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi"
-	}
-}
+// ==================== HELPERS ====================
 
-func safeNodeBuildCommand(project *DetectedProject) string {
-	if strings.TrimSpace(project.BuildCommand) == "" {
-		return "echo 'No build script detected'"
-	}
-	return project.BuildCommand
-}
 
-func optionalRunLine(command string) string {
-	if strings.TrimSpace(command) == "" {
-		return ""
-	}
-	return "RUN " + command
-}
 
-func healthPath(project *DetectedProject) string {
-	if project == nil || strings.TrimSpace(project.HealthCheckPath) == "" {
-		return "/"
-	}
-	return project.HealthCheckPath
-}
+func getOrDefault(m map[string]string, key, defaultValue string) string {
 
-func (g *DockerfileGenerator) log(level, message string) {
-	if g.logf != nil {
-		g.logf(level, message)
-	}
+    if val, ok := m[key]; ok && val != "" {
+
+        return val
+
+    }
+
+    return defaultValue
+
 }

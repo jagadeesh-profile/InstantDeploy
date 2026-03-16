@@ -96,7 +96,7 @@ func NewManagerWithStoreAndQueue(store Store, redisQueue *redis.Client) *Manager
 		workerCount:  workerCount,
 		buildQueue:   make(chan buildRequest, defaultQueueSize),
 		redisQueue:   redisQueue,
-		queueKey:     defaultQueueKey,
+		queueKey:     getQueueKeyFromEnv(),
 		subscribers:  make(map[int]chan RuntimeEvent),
 		store:        store,
 	}
@@ -179,6 +179,27 @@ func (m *Manager) hydrateFromStore() {
 			m.logs[id] = []models.DeploymentLog{}
 		}
 		m.lastTouched[id] = now
+
+		// Deployments stuck mid-execution when the server last stopped cannot
+		// resume; mark them failed so the UI doesn't show them as stuck.
+		// Exception: in Redis-queue mode "queued" jobs are still in the Redis
+		// queue and will be picked up by the next worker — don't fail those.
+		status := deployments[i].Status
+		usingRedis := m.redisQueue != nil
+		isStuck := status == "cloning" || status == "building" || status == "starting" ||
+			(status == "queued" && !usingRedis)
+		if isStuck {
+			m.deployments[i].Status = "failed"
+			m.deployments[i].Error = "Server restarted before this deployment could complete"
+			if m.store != nil {
+				snapshot := m.deployments[i]
+				go func() {
+					if err := m.store.UpsertDeployment(snapshot); err != nil {
+						log.Printf("runtime persistence: could not fail interrupted deployment %s: %v", snapshot.ID, err)
+					}
+				}()
+			}
+		}
 	}
 }
 
@@ -553,11 +574,20 @@ func (m *Manager) workerLoop(workerID int) {
 				customURL:    msg.CustomURL,
 			}
 
-			if !m.deploymentExists(req.deploymentID) {
+			if !m.ensureDeploymentLoaded(req.deploymentID, msg) {
+				log.Printf("worker %d: skipping unknown deployment %s", workerID, req.deploymentID)
 				continue
 			}
 			m.appendLog(req.deploymentID, "info", fmt.Sprintf("Worker %d picked queued deployment", workerID))
-			m.buildAndRun(req.deploymentID, req.repoURL, req.displayRepo, req.branch, req.customURL)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("worker %d: recovered from panic processing %s: %v", workerID, req.deploymentID, r)
+						m.markFailed(req.deploymentID, fmt.Sprintf("internal build error (panic): %v", r))
+					}
+				}()
+				m.buildAndRun(req.deploymentID, req.repoURL, req.displayRepo, req.branch, req.customURL)
+			}()
 		}
 	}
 
@@ -566,7 +596,15 @@ func (m *Manager) workerLoop(workerID int) {
 			continue
 		}
 		m.appendLog(req.deploymentID, "info", fmt.Sprintf("Worker %d picked queued deployment", workerID))
-		m.buildAndRun(req.deploymentID, req.repoURL, req.displayRepo, req.branch, req.customURL)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("worker %d: recovered from panic processing %s: %v", workerID, req.deploymentID, r)
+					m.markFailed(req.deploymentID, fmt.Sprintf("internal build error (panic): %v", r))
+				}
+			}()
+			m.buildAndRun(req.deploymentID, req.repoURL, req.displayRepo, req.branch, req.customURL)
+		}()
 	}
 }
 
@@ -603,6 +641,36 @@ func (m *Manager) markFailed(deploymentID, message string) {
 			return
 		}
 	}
+}
+
+// ensureDeploymentLoaded checks if deploymentID exists in memory. If not and a
+// persistent store is available, it tries to load it from there (so that Redis
+// workers on any backend instance can process jobs created by other instances).
+// Returns true if the deployment is now in memory and ready to be processed.
+func (m *Manager) ensureDeploymentLoaded(deploymentID string, msg buildQueueMessage) bool {
+	if m.deploymentExists(deploymentID) {
+		return true
+	}
+	if m.store == nil {
+		return false
+	}
+	dep, found, err := m.store.GetDeployment(deploymentID)
+	if err != nil {
+		log.Printf("ensureDeploymentLoaded: store lookup failed for %s: %v", deploymentID, err)
+		return false
+	}
+	if !found {
+		return false
+	}
+	// Load into local memory so the worker can operate on it.
+	m.mu.Lock()
+	m.deployments = append(m.deployments, dep)
+	if _, ok := m.logs[dep.ID]; !ok {
+		m.logs[dep.ID] = []models.DeploymentLog{}
+	}
+	m.lastTouched[dep.ID] = time.Now().UTC()
+	m.mu.Unlock()
+	return true
 }
 
 func (m *Manager) updateStatus(deploymentID, status string) {
@@ -1106,4 +1174,12 @@ func getBuildWorkersFromEnv() int {
 		return 10
 	}
 	return workers
+}
+
+func getQueueKeyFromEnv() string {
+	v := strings.TrimSpace(os.Getenv("BUILD_QUEUE_KEY"))
+	if v == "" {
+		return defaultQueueKey
+	}
+	return v
 }

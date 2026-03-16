@@ -1,593 +1,1433 @@
 package runtime
 
+
+
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
+
+    "encoding/json"
+
+    "encoding/xml"
+
+    "fmt"
+
+    "os"
+
+    "path/filepath"
+
+    "regexp"
+
+    "strings"
+
 )
 
-type ProjectKind string
 
-const (
-	ProjectKindCustom     ProjectKind = "custom"
-	ProjectKindNode       ProjectKind = "node"
-	ProjectKindPython     ProjectKind = "python"
-	ProjectKindGo         ProjectKind = "go"
-	ProjectKindJavaMaven  ProjectKind = "java-maven"
-	ProjectKindJavaGradle ProjectKind = "java-gradle"
-	ProjectKindRust       ProjectKind = "rust"
-	ProjectKindPHP        ProjectKind = "php"
-	ProjectKindRuby       ProjectKind = "ruby"
-	ProjectKindDotNet     ProjectKind = "dotnet"
-	ProjectKindStatic     ProjectKind = "static"
-)
 
-type DetectedProject struct {
-	Kind               ProjectKind
-	Framework          string
-	RuntimeVersion     string
-	PackageManager     string
-	Port               int
-	HealthCheckPath    string
-	ExistingDockerfile string
-	BuildCommand       string
-	StartCommand       string
-	StaticOutputDir    string
-	Entrypoint         string
-	DotNetProjectFile  string
-	JavaUseWrapper     bool
-	Summary            string
+// ProjectConfig holds comprehensive project configuration
+
+type ProjectConfig struct {
+
+    Type            string                 `json:"type"`
+
+    Language        string                 `json:"language"`
+
+    Framework       string                 `json:"framework"`
+
+    BuildTool       string                 `json:"build_tool"`
+
+    Version         map[string]string      `json:"version"`
+
+    BuildFile       string                 `json:"build_file"`
+
+    MainClass       string                 `json:"main_class"`
+
+    Port             int                    `json:"port"`
+
+    BuildCommand    string                 `json:"build_command"`
+
+    StartCommand    string                 `json:"start_command"`
+
+    EnvVars         map[string]string      `json:"env_vars"`
+
+    SkipPlugins     []string               `json:"skip_plugins"`
+
+    FixRequired     bool                   `json:"fix_required"`
+
+    CustomSettings  map[string]interface{} `json:"custom_settings"`
+
 }
 
-type SmartDetector struct{}
 
-func NewSmartDetector() *SmartDetector {
-	return &SmartDetector{}
+
+// SmartDetector intelligently detects and analyzes projects
+
+type SmartDetector struct {
+
+    repoDir string
+
 }
 
-func (d *SmartDetector) Detect(repoDir string) (*DetectedProject, error) {
-	if fileExists(filepath.Join(repoDir, "Dockerfile")) {
-		project := &DetectedProject{
-			Kind:               ProjectKindCustom,
-			Framework:          "custom",
-			ExistingDockerfile: filepath.Join(repoDir, "Dockerfile"),
-			Port:               3000,
-			HealthCheckPath:    "/",
-			Summary:            "custom Dockerfile",
-		}
-		if port := detectExposePortFromDockerfile(project.ExistingDockerfile); port > 0 {
-			project.Port = port
-		}
-		return project, nil
-	}
 
-	if project, ok, err := d.detectDotNet(repoDir); ok || err != nil {
-		return project, err
-	}
-	if project, ok, err := d.detectJava(repoDir); ok || err != nil {
-		return project, err
-	}
-	if project, ok, err := d.detectNode(repoDir); ok || err != nil {
-		return project, err
-	}
-	if project, ok, err := d.detectPython(repoDir); ok || err != nil {
-		return project, err
-	}
-	if project, ok, err := d.detectGo(repoDir); ok || err != nil {
-		return project, err
-	}
-	if project, ok, err := d.detectRust(repoDir); ok || err != nil {
-		return project, err
-	}
-	if project, ok, err := d.detectPHP(repoDir); ok || err != nil {
-		return project, err
-	}
-	if project, ok, err := d.detectRuby(repoDir); ok || err != nil {
-		return project, err
-	}
-	if project, ok := d.detectStatic(repoDir); ok {
-		return project, nil
-	}
 
-	return &DetectedProject{
-		Kind:            ProjectKindStatic,
-		Framework:       "static",
-		Port:            80,
-		HealthCheckPath: "/",
-		Summary:         "static site fallback",
-	}, nil
+func NewSmartDetector(repoDir string) *SmartDetector {
+
+    return &SmartDetector{repoDir: repoDir}
+
 }
 
-type packageJSON struct {
-	Name         string            `json:"name"`
-	Main         string            `json:"main"`
-	PackageMGR   string            `json:"packageManager"`
-	Scripts      map[string]string `json:"scripts"`
-	Dependencies map[string]string `json:"dependencies"`
-	DevDeps      map[string]string `json:"devDependencies"`
-	Engines      struct {
-		Node string `json:"node"`
-	} `json:"engines"`
+
+
+// Detect performs comprehensive project detection
+
+func (d *SmartDetector) Detect() (*ProjectConfig, error) {
+
+    config := &ProjectConfig{
+
+        Version:        make(map[string]string),
+
+        EnvVars:        make(map[string]string),
+
+        CustomSettings: make(map[string]interface{}),
+
+        SkipPlugins:    []string{},
+
+        Port:           8080,
+
+        FixRequired:    false,
+
+    }
+
+
+
+    // Priority order: Custom Dockerfile  Java  Node  Python  Go  Rust  Static
+
+
+
+    // 1. Check for custom Dockerfile
+
+    if d.hasFile("Dockerfile") {
+
+        config.Type = "custom"
+
+        config.Language = "docker"
+
+        return config, nil
+
+    }
+
+
+
+    // 2. Detect Java projects (Gradle/Maven)
+
+    if detected, err := d.detectJava(config); detected {
+
+        return config, err
+
+    }
+
+
+
+    // 3. Detect Node.js projects
+
+    if detected, err := d.detectNode(config); detected {
+
+        return config, err
+
+    }
+
+
+
+    // 4. Detect Python projects
+
+    if detected, err := d.detectPython(config); detected {
+
+        return config, err
+
+    }
+
+
+
+    // 5. Detect Go projects
+
+    if detected, err := d.detectGo(config); detected {
+
+        return config, err
+
+    }
+
+
+
+    // 6. Detect Rust projects
+
+    if detected, err := d.detectRust(config); detected {
+
+        return config, err
+
+    }
+
+
+
+    // 7. Detect PHP projects
+
+    if detected, err := d.detectPHP(config); detected {
+
+        return config, err
+
+    }
+
+
+
+    // 8. Detect Ruby projects
+
+    if detected, err := d.detectRuby(config); detected {
+
+        return config, err
+
+    }
+
+
+
+    // 9. Detect .NET projects
+
+    if detected, err := d.detectDotNet(config); detected {
+
+        return config, err
+
+    }
+
+
+
+    // 10. Default to static
+
+    config.Type = "static"
+
+    config.Language = "html"
+
+    config.Port = 80
+
+    return config, nil
+
 }
 
-func (d *SmartDetector) detectNode(repoDir string) (*DetectedProject, bool, error) {
-	pkgPath := filepath.Join(repoDir, "package.json")
-	if !fileExists(pkgPath) {
-		return nil, false, nil
-	}
 
-	data, err := os.ReadFile(pkgPath)
-	if err != nil {
-		return nil, true, fmt.Errorf("failed to read package.json: %w", err)
-	}
 
-	var pkg packageJSON
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return nil, true, fmt.Errorf("failed to parse package.json: %w", err)
-	}
+// ==================== JAVA DETECTION ====================
 
-	framework := detectNodeFramework(pkg)
-	packageManager := detectNodePackageManager(repoDir, pkg.PackageMGR)
-	version := firstNonEmpty(strings.TrimSpace(pkg.Engines.Node), readTrimmedFile(filepath.Join(repoDir, ".nvmrc")), "20")
-	port := 3000
-	healthPath := "/"
-	staticOutputDir := ""
-	buildCommand := nodeRunScript(packageManager, "build")
-	startCommand := nodeStartCommand(packageManager, pkg, framework)
 
-	if framework == "vite" || framework == "react-spa" || framework == "vue-spa" || framework == "angular" || framework == "svelte" {
-		port = 80
-		staticOutputDir = detectNodeStaticOutputDir(repoDir, framework)
-		startCommand = ""
-	}
-	if framework == "next" || framework == "nuxt" || framework == "express" || framework == "nestjs" || framework == "fastify" {
-		healthPath = "/"
-	}
 
-	return &DetectedProject{
-		Kind:            ProjectKindNode,
-		Framework:       framework,
-		RuntimeVersion:  sanitizeNodeVersion(version),
-		PackageManager:  packageManager,
-		Port:            port,
-		HealthCheckPath: healthPath,
-		BuildCommand:    buildCommand,
-		StartCommand:    startCommand,
-		StaticOutputDir: staticOutputDir,
-		Entrypoint:      strings.TrimSpace(pkg.Main),
-		Summary:         fmt.Sprintf("node/%s via %s", framework, packageManager),
-	}, true, nil
+func (d *SmartDetector) detectJava(config *ProjectConfig) (bool, error) {
+
+    // Check for Gradle
+
+    if d.hasFile("build.gradle") || d.hasFile("build.gradle.kts") {
+
+        return d.detectGradle(config)
+
+    }
+
+
+
+    // Check for Maven
+
+    if d.hasFile("pom.xml") {
+
+        return d.detectMaven(config)
+
+    }
+
+
+
+    return false, nil
+
 }
 
-func (d *SmartDetector) detectPython(repoDir string) (*DetectedProject, bool, error) {
-	if !fileExists(filepath.Join(repoDir, "requirements.txt")) && !fileExists(filepath.Join(repoDir, "pyproject.toml")) && !fileExists(filepath.Join(repoDir, "Pipfile")) {
-		return nil, false, nil
-	}
 
-	framework := "python"
-	port := 8000
-	healthPath := "/"
-	entrypoint := firstExisting(repoDir, "main.py", "app.py", "run.py", "wsgi.py", "manage.py")
-	version := firstNonEmpty(readTrimmedFile(filepath.Join(repoDir, "runtime.txt")), readTrimmedFile(filepath.Join(repoDir, ".python-version")), detectRequiresPython(filepath.Join(repoDir, "pyproject.toml")), "3.11")
 
-	deps := strings.ToLower(readOptional(filepath.Join(repoDir, "requirements.txt")) + "\n" + readOptional(filepath.Join(repoDir, "pyproject.toml")))
-	switch {
-	case fileExists(filepath.Join(repoDir, "manage.py")) || strings.Contains(deps, "django"):
-		framework = "django"
-		start := "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
-		return &DetectedProject{Kind: ProjectKindPython, Framework: framework, RuntimeVersion: sanitizePythonVersion(version), Port: 8000, HealthCheckPath: "/", StartCommand: start, Summary: "python/django"}, true, nil
-	case strings.Contains(deps, "fastapi") || strings.Contains(deps, "uvicorn"):
-		framework = "fastapi"
-		module := strings.TrimSuffix(entrypoint, ".py")
-		if module == "" {
-			module = "main"
-		}
-		start := fmt.Sprintf("python -m uvicorn %s:app --host 0.0.0.0 --port 8000", module)
-		return &DetectedProject{Kind: ProjectKindPython, Framework: framework, RuntimeVersion: sanitizePythonVersion(version), Port: 8000, HealthCheckPath: "/", StartCommand: start, Summary: "python/fastapi"}, true, nil
-	case strings.Contains(deps, "streamlit"):
-		framework = "streamlit"
-		if entrypoint == "" {
-			entrypoint = "app.py"
-		}
-		port = 8501
-		start := fmt.Sprintf("streamlit run %s --server.port 8501 --server.address 0.0.0.0", entrypoint)
-		return &DetectedProject{Kind: ProjectKindPython, Framework: framework, RuntimeVersion: sanitizePythonVersion(version), Port: port, HealthCheckPath: "/", StartCommand: start, Summary: "python/streamlit"}, true, nil
-	default:
-		framework = "flask"
-		module := strings.TrimSuffix(entrypoint, ".py")
-		if module == "" {
-			module = "app"
-		}
-		start := fmt.Sprintf("python -m flask --app %s:app run --host=0.0.0.0 --port=8000", module)
-		if entrypoint == "" {
-			start = "python app.py"
-		}
-		return &DetectedProject{Kind: ProjectKindPython, Framework: framework, RuntimeVersion: sanitizePythonVersion(version), Port: port, HealthCheckPath: healthPath, StartCommand: start, Summary: "python/flask"}, true, nil
-	}
+func (d *SmartDetector) detectGradle(config *ProjectConfig) (bool, error) {
+
+    config.Language = "java"
+
+    config.BuildTool = "gradle"
+
+
+
+    buildFile := "build.gradle"
+
+    if d.hasFile("build.gradle.kts") {
+
+        buildFile = "build.gradle.kts"
+
+    }
+
+    config.BuildFile = buildFile
+
+
+
+    content, err := d.readFile(buildFile)
+
+    if err != nil {
+
+        return true, err
+
+    }
+
+
+
+    // Detect Spring Boot
+
+    if strings.Contains(content, "spring-boot") || strings.Contains(content, "org.springframework.boot") {
+
+        config.Framework = "spring-boot"
+
+        config.Type = "java-spring-boot-gradle"
+
+    } else {
+
+        config.Type = "java-gradle"
+
+    }
+
+
+
+    // Detect problematic plugins (CRITICAL!)
+
+    config.SkipPlugins = d.detectProblematicGradlePlugins(content)
+
+    if len(config.SkipPlugins) > 0 {
+
+        config.FixRequired = true
+
+    }
+
+
+
+    // Detect Java version
+
+    config.Version["java"] = d.extractGradleJavaVersion(content)
+
+    if config.Version["java"] == "" {
+
+        config.Version["java"] = "17"
+
+    }
+
+
+
+    // Detect Gradle version
+
+    config.Version["gradle"] = d.detectGradleWrapperVersion()
+
+    if config.Version["gradle"] == "" {
+
+        config.Version["gradle"] = "8.5"
+
+    }
+
+
+
+    // Detect main class
+
+    config.MainClass = d.detectSpringBootMainClass()
+
+
+
+    // Detect port
+
+    config.Port = d.detectJavaPort()
+
+
+
+    return true, nil
+
 }
 
-func (d *SmartDetector) detectGo(repoDir string) (*DetectedProject, bool, error) {
-	goModPath := filepath.Join(repoDir, "go.mod")
-	if !fileExists(goModPath) {
-		return nil, false, nil
-	}
 
-	goMod := readOptional(goModPath)
-	version := "1.22"
-	if match := regexp.MustCompile(`(?m)^go\s+([0-9]+(?:\.[0-9]+)?)`).FindStringSubmatch(goMod); len(match) == 2 {
-		version = match[1]
-	}
-	entrypoint := "server"
-	if match := regexp.MustCompile(`(?m)^module\s+(.+)$`).FindStringSubmatch(goMod); len(match) == 2 {
-		parts := strings.Split(strings.TrimSpace(match[1]), "/")
-		entrypoint = sanitizeName(parts[len(parts)-1])
-	}
 
-	return &DetectedProject{
-		Kind:            ProjectKindGo,
-		Framework:       "go",
-		RuntimeVersion:  version,
-		Port:            8080,
-		HealthCheckPath: "/health",
-		Entrypoint:      entrypoint,
-		Summary:         "go service",
-	}, true, nil
+func (d *SmartDetector) detectMaven(config *ProjectConfig) (bool, error) {
+
+    config.Language = "java"
+
+    config.BuildTool = "maven"
+
+    config.BuildFile = "pom.xml"
+
+
+
+    content, err := d.readFile("pom.xml")
+
+    if err != nil {
+
+        return true, err
+
+    }
+
+
+
+    // Detect Spring Boot
+
+    if strings.Contains(content, "spring-boot") {
+
+        config.Framework = "spring-boot"
+
+        config.Type = "java-spring-boot-maven"
+
+    } else {
+
+        config.Type = "java-maven"
+
+    }
+
+
+
+    // Check for problematic plugins
+
+    if strings.Contains(content, "docker-maven-plugin") ||
+
+        strings.Contains(content, "jib-maven-plugin") {
+
+        config.SkipPlugins = append(config.SkipPlugins, "docker-maven-plugin", "jib-maven-plugin")
+
+        config.FixRequired = true
+
+    }
+
+
+
+    // Parse Java version
+
+    config.Version["java"] = d.extractMavenJavaVersion(content)
+
+    if config.Version["java"] == "" {
+
+        config.Version["java"] = "17"
+
+    }
+
+
+
+    config.Port = d.detectJavaPort()
+
+
+
+    return true, nil
+
 }
 
-func (d *SmartDetector) detectJava(repoDir string) (*DetectedProject, bool, error) {
-	if fileExists(filepath.Join(repoDir, "pom.xml")) {
-		version := sanitizeJavaVersion(detectJavaVersion(filepath.Join(repoDir, "pom.xml"), filepath.Join(repoDir, "mvnw")))
-		return &DetectedProject{
-			Kind:            ProjectKindJavaMaven,
-			Framework:       detectJavaFramework(repoDir),
-			RuntimeVersion:  version,
-			Port:            8080,
-			HealthCheckPath: "/actuator/health",
-			Summary:         "java/maven",
-		}, true, nil
-	}
 
-	if fileExists(filepath.Join(repoDir, "build.gradle")) || fileExists(filepath.Join(repoDir, "build.gradle.kts")) || fileExists(filepath.Join(repoDir, "gradlew")) {
-		version := sanitizeJavaVersion(detectJavaVersion(filepath.Join(repoDir, "build.gradle"), filepath.Join(repoDir, "gradlew")))
-		return &DetectedProject{
-			Kind:            ProjectKindJavaGradle,
-			Framework:       detectJavaFramework(repoDir),
-			RuntimeVersion:  version,
-			Port:            8080,
-			HealthCheckPath: "/actuator/health",
-			JavaUseWrapper:  fileExists(filepath.Join(repoDir, "gradlew")),
-			Summary:         "java/gradle",
-		}, true, nil
-	}
 
-	return nil, false, nil
+// Detect problematic Gradle plugins
+
+func (d *SmartDetector) detectProblematicGradlePlugins(content string) []string {
+
+    problematic := []string{}
+
+
+
+    patterns := map[string]string{
+
+        `com\.palantir\.docker`:        "com.palantir.docker",
+
+        `com\.bmuschko\.docker`:        "com.bmuschko.docker",
+
+        `com\.google\.cloud\.tools\.jib`: "com.google.cloud.tools.jib",
+
+        `gradle-docker`:                "gradle-docker",
+
+        `docker-compose`:               "docker-compose",
+
+        `nebula\.docker`:               "nebula.docker",
+
+    }
+
+
+
+    for pattern, plugin := range patterns {
+
+        if matched, _ := regexp.MatchString(pattern, content); matched {
+
+            problematic = append(problematic, plugin)
+
+        }
+
+    }
+
+
+
+    return problematic
+
 }
 
-func (d *SmartDetector) detectRust(repoDir string) (*DetectedProject, bool, error) {
-	cargoPath := filepath.Join(repoDir, "Cargo.toml")
-	if !fileExists(cargoPath) {
-		return nil, false, nil
-	}
 
-	content := readOptional(cargoPath)
-	entry := "app"
-	if match := regexp.MustCompile(`(?m)^name\s*=\s*"([^"]+)"`).FindStringSubmatch(content); len(match) == 2 {
-		entry = sanitizeName(match[1])
-	}
 
-	return &DetectedProject{
-		Kind:            ProjectKindRust,
-		Framework:       "rust",
-		RuntimeVersion:  "1.78",
-		Port:            8080,
-		HealthCheckPath: "/health",
-		Entrypoint:      entry,
-		Summary:         "rust service",
-	}, true, nil
+func (d *SmartDetector) detectGradleWrapperVersion() string {
+
+    wrapperPath := filepath.Join(d.repoDir, "gradle", "wrapper", "gradle-wrapper.properties")
+
+    content, err := os.ReadFile(wrapperPath)
+
+    if err != nil {
+
+        return ""
+
+    }
+
+
+
+    re := regexp.MustCompile(`gradle-(\d+\.\d+)`)
+
+    matches := re.FindStringSubmatch(string(content))
+
+    if len(matches) > 1 {
+
+        return matches[1]
+
+    }
+
+    return ""
+
 }
 
-func (d *SmartDetector) detectPHP(repoDir string) (*DetectedProject, bool, error) {
-	if !fileExists(filepath.Join(repoDir, "composer.json")) && !fileExists(filepath.Join(repoDir, "artisan")) && !fileExists(filepath.Join(repoDir, "index.php")) {
-		return nil, false, nil
-	}
 
-	framework := "php"
-	start := "php -S 0.0.0.0:8000 -t public"
-	if fileExists(filepath.Join(repoDir, "artisan")) {
-		framework = "laravel"
-		start = "php artisan serve --host=0.0.0.0 --port=8000"
-	} else if fileExists(filepath.Join(repoDir, "public", "index.php")) {
-		framework = "php-web"
-	} else {
-		start = "php -S 0.0.0.0:8000"
-	}
 
-	return &DetectedProject{
-		Kind:            ProjectKindPHP,
-		Framework:       framework,
-		RuntimeVersion:  "8.3",
-		Port:            8000,
-		HealthCheckPath: "/",
-		StartCommand:    start,
-		Summary:         fmt.Sprintf("php/%s", framework),
-	}, true, nil
+func (d *SmartDetector) extractGradleJavaVersion(content string) string {
+
+    patterns := []string{
+
+        `sourceCompatibility\s*=\s*['"]?(\d+)['"]?`,
+
+        `JavaVersion\.VERSION_(\d+)`,
+
+        `toolchain.*languageVersion.*of\((\d+)\)`,
+
+        `java\s*{\s*sourceCompatibility\s*=\s*['"]?(\d+)['"]?`,
+
+    }
+
+
+
+    for _, pattern := range patterns {
+
+        re := regexp.MustCompile(pattern)
+
+        matches := re.FindStringSubmatch(content)
+
+        if len(matches) > 1 {
+
+            return matches[1]
+
+        }
+
+    }
+
+    return ""
+
 }
 
-func (d *SmartDetector) detectRuby(repoDir string) (*DetectedProject, bool, error) {
-	if !fileExists(filepath.Join(repoDir, "Gemfile")) {
-		return nil, false, nil
-	}
 
-	framework := "ruby"
-	start := "bundle exec rackup --host 0.0.0.0 --port 3000"
-	if fileExists(filepath.Join(repoDir, "config", "application.rb")) {
-		framework = "rails"
-		start = "bundle exec rails server -b 0.0.0.0 -p 3000"
-	}
 
-	return &DetectedProject{
-		Kind:            ProjectKindRuby,
-		Framework:       framework,
-		RuntimeVersion:  firstNonEmpty(readTrimmedFile(filepath.Join(repoDir, ".ruby-version")), "3.3"),
-		Port:            3000,
-		HealthCheckPath: "/",
-		StartCommand:    start,
-		Summary:         fmt.Sprintf("ruby/%s", framework),
-	}, true, nil
+func (d *SmartDetector) extractMavenJavaVersion(content string) string {
+
+    type POM struct {
+
+        Properties struct {
+
+            JavaVersion         string `xml:"java.version"`
+
+            MavenCompilerSource string `xml:"maven.compiler.source"`
+
+            MavenCompilerTarget string `xml:"maven.compiler.target"`
+
+        } `xml:"properties"`
+
+    }
+
+
+
+    var pom POM
+
+    if err := xml.Unmarshal([]byte(content), &pom); err == nil {
+
+        if pom.Properties.JavaVersion != "" {
+
+            return pom.Properties.JavaVersion
+
+        }
+
+        if pom.Properties.MavenCompilerSource != "" {
+
+            return pom.Properties.MavenCompilerSource
+
+        }
+
+        if pom.Properties.MavenCompilerTarget != "" {
+
+            return pom.Properties.MavenCompilerTarget
+
+        }
+
+    }
+
+    return ""
+
 }
 
-func (d *SmartDetector) detectDotNet(repoDir string) (*DetectedProject, bool, error) {
-	files, err := filepath.Glob(filepath.Join(repoDir, "*.csproj"))
-	if err != nil {
-		return nil, true, fmt.Errorf("failed to inspect dotnet project: %w", err)
-	}
-	if len(files) == 0 {
-		return nil, false, nil
-	}
 
-	project := files[0]
-	framework := "dotnet"
-	if strings.Contains(readOptional(project), "Microsoft.NET.Sdk.Web") {
-		framework = "aspnet"
-	}
 
-	version := "8.0"
-	globalJSON := readOptional(filepath.Join(repoDir, "global.json"))
-	if match := regexp.MustCompile(`"version"\s*:\s*"([0-9]+(?:\.[0-9]+)?)`).FindStringSubmatch(globalJSON); len(match) == 2 {
-		version = match[1]
-	}
+func (d *SmartDetector) detectSpringBootMainClass() string {
 
-	return &DetectedProject{
-		Kind:              ProjectKindDotNet,
-		Framework:         framework,
-		RuntimeVersion:    version,
-		Port:              8080,
-		HealthCheckPath:   "/health",
-		DotNetProjectFile: filepath.Base(project),
-		Summary:           fmt.Sprintf("dotnet/%s", framework),
-	}, true, nil
+    var mainClass string
+
+
+
+    filepath.Walk(filepath.Join(d.repoDir, "src"), func(path string, info os.FileInfo, err error) error {
+
+        if err != nil || info.IsDir() || !strings.HasSuffix(path, ".java") {
+
+            return nil
+
+        }
+
+
+
+        content, err := os.ReadFile(path)
+
+        if err != nil {
+
+            return nil
+
+        }
+
+
+
+        if strings.Contains(string(content), "@SpringBootApplication") {
+
+            packageRe := regexp.MustCompile(`package\s+([\w.]+);`)
+
+            classRe := regexp.MustCompile(`public\s+class\s+(\w+)`)
+
+
+
+            packageMatch := packageRe.FindStringSubmatch(string(content))
+
+            classMatch := classRe.FindStringSubmatch(string(content))
+
+
+
+            if len(packageMatch) > 1 && len(classMatch) > 1 {
+
+                mainClass = packageMatch[1] + "." + classMatch[1]
+
+                return filepath.SkipDir
+
+            }
+
+        }
+
+        return nil
+
+    })
+
+
+
+    return mainClass
+
 }
 
-func (d *SmartDetector) detectStatic(repoDir string) (*DetectedProject, bool) {
-	if fileExists(filepath.Join(repoDir, "index.html")) || fileExists(filepath.Join(repoDir, "public", "index.html")) {
-		return &DetectedProject{
-			Kind:            ProjectKindStatic,
-			Framework:       "static",
-			Port:            80,
-			HealthCheckPath: "/",
-			Summary:         "static site",
-		}, true
-	}
-	return nil, false
+
+
+func (d *SmartDetector) detectJavaPort() int {
+
+    // Check application.properties
+
+    propsPath := filepath.Join(d.repoDir, "src", "main", "resources", "application.properties")
+
+    if content, err := os.ReadFile(propsPath); err == nil {
+
+        re := regexp.MustCompile(`server\.port\s*=\s*(\d+)`)
+
+        if matches := re.FindStringSubmatch(string(content)); len(matches) > 1 {
+
+            var port int
+
+            fmt.Sscanf(matches[1], "%d", &port)
+
+            return port
+
+        }
+
+    }
+
+
+
+    // Check application.yml/yaml
+
+    for _, name := range []string{"application.yml", "application.yaml"} {
+
+        ymlPath := filepath.Join(d.repoDir, "src", "main", "resources", name)
+
+        if content, err := os.ReadFile(ymlPath); err == nil {
+
+            re := regexp.MustCompile(`port:\s*(\d+)`)
+
+            if matches := re.FindStringSubmatch(string(content)); len(matches) > 1 {
+
+                var port int
+
+                fmt.Sscanf(matches[1], "%d", &port)
+
+                return port
+
+            }
+
+        }
+
+    }
+
+
+
+    return 8080 // Default Spring Boot port
+
 }
 
-func detectNodeFramework(pkg packageJSON) string {
-	deps := mergePackageMaps(pkg.Dependencies, pkg.DevDeps)
-	switch {
-	case deps["next"] != "":
-		return "next"
-	case deps["nuxt"] != "" || deps["nuxt3"] != "":
-		return "nuxt"
-	case deps["@nestjs/core"] != "":
-		return "nestjs"
-	case deps["express"] != "":
-		return "express"
-	case deps["fastify"] != "":
-		return "fastify"
-	case deps["vite"] != "" && deps["react"] != "":
-		return "react-spa"
-	case deps["vite"] != "" && deps["vue"] != "":
-		return "vue-spa"
-	case deps["vite"] != "":
-		return "vite"
-	case deps["react-scripts"] != "":
-		return "react-spa"
-	case deps["@angular/core"] != "":
-		return "angular"
-	case deps["svelte"] != "":
-		return "svelte"
-	default:
-		return "node"
-	}
+
+
+// ==================== NODE.JS DETECTION ====================
+
+
+
+func (d *SmartDetector) detectNode(config *ProjectConfig) (bool, error) {
+
+    if !d.hasFile("package.json") {
+
+        return false, nil
+
+    }
+
+
+
+    config.Language = "javascript"
+
+    config.Type = "node"
+
+    config.BuildFile = "package.json"
+
+
+
+    content, err := d.readFile("package.json")
+
+    if err != nil {
+
+        return true, err
+
+    }
+
+
+
+    var pkg map[string]interface{}
+
+    if err := json.Unmarshal([]byte(content), &pkg); err != nil {
+
+        return true, err
+
+    }
+
+
+
+    // Detect package manager
+
+    if d.hasFile("pnpm-lock.yaml") {
+
+        config.BuildTool = "pnpm"
+
+    } else if d.hasFile("yarn.lock") {
+
+        config.BuildTool = "yarn"
+
+    } else if d.hasFile("bun.lockb") {
+
+        config.BuildTool = "bun"
+
+    } else {
+
+        config.BuildTool = "npm"
+
+    }
+
+
+
+    // Detect Node version
+
+    if engines, ok := pkg["engines"].(map[string]interface{}); ok {
+
+        if node, ok := engines["node"].(string); ok {
+
+            config.Version["node"] = d.extractVersionNumber(node)
+
+        }
+
+    }
+
+    if config.Version["node"] == "" {
+
+        config.Version["node"] = "20" // Latest LTS
+
+    }
+
+
+
+    // Detect framework
+
+    deps := d.extractDependencies(pkg, "dependencies")
+
+    devDeps := d.extractDependencies(pkg, "devDependencies")
+
+
+
+    // Next.js
+
+    if _, hasNext := deps["next"]; hasNext {
+
+        config.Framework = "nextjs"
+
+        config.Type = "node-nextjs"
+
+        config.Port = 3000
+
+    // Nuxt.js
+
+    } else if _, hasNuxt := deps["nuxt"]; hasNuxt {
+
+        config.Framework = "nuxt"
+
+        config.Type = "node-nuxt"
+
+        config.Port = 3000
+
+    // Vite + React/Vue
+
+    } else if _, hasVite := devDeps["vite"]; hasVite {
+
+        config.Framework = "vite"
+
+        config.Type = "node-vite"
+
+        config.Port = 5173
+
+    // Create React App
+
+    } else if _, hasCRA := deps["react-scripts"]; hasCRA {
+
+        config.Framework = "cra"
+
+        config.Type = "node-cra"
+
+        config.Port = 3000
+
+    // React (generic)
+
+    } else if _, hasReact := deps["react"]; hasReact {
+
+        config.Framework = "react"
+
+        config.Port = 3000
+
+    // Vue (generic)
+
+    } else if _, hasVue := deps["vue"]; hasVue {
+
+        config.Framework = "vue"
+
+        config.Port = 8080
+
+    // Express
+
+    } else if _, hasExpress := deps["express"]; hasExpress {
+
+        config.Framework = "express"
+
+        config.Type = "node-express"
+
+        config.Port = 3000
+
+    // NestJS
+
+    } else if _, hasNest := deps["@nestjs/core"]; hasNest {
+
+        config.Framework = "nestjs"
+
+        config.Type = "node-nestjs"
+
+        config.Port = 3000
+
+    // Fastify
+
+    } else if _, hasFastify := deps["fastify"]; hasFastify {
+
+        config.Framework = "fastify"
+
+        config.Port = 3000
+
+    }
+
+
+
+    // Extract build and start scripts
+
+    if scripts, ok := pkg["scripts"].(map[string]interface{}); ok {
+
+        if build, ok := scripts["build"].(string); ok {
+
+            config.BuildCommand = build
+
+        }
+
+        if start, ok := scripts["start"].(string); ok {
+
+            config.StartCommand = start
+
+        }
+
+        if dev, ok := scripts["dev"].(string); ok && config.StartCommand == "" {
+
+            config.StartCommand = dev
+
+        }
+
+    }
+
+
+
+    return true, nil
+
 }
 
-func detectNodePackageManager(repoDir, packageManagerField string) string {
-	field := strings.TrimSpace(strings.ToLower(packageManagerField))
-	switch {
-	case strings.HasPrefix(field, "pnpm"):
-		return "pnpm"
-	case strings.HasPrefix(field, "yarn"):
-		return "yarn"
-	case strings.HasPrefix(field, "bun"):
-		return "bun"
-	case strings.HasPrefix(field, "npm"):
-		return "npm"
-	}
 
-	switch {
-	case fileExists(filepath.Join(repoDir, "pnpm-lock.yaml")):
-		return "pnpm"
-	case fileExists(filepath.Join(repoDir, "yarn.lock")):
-		return "yarn"
-	case fileExists(filepath.Join(repoDir, "bun.lockb")) || fileExists(filepath.Join(repoDir, "bun.lock")):
-		return "bun"
-	default:
-		return "npm"
-	}
+
+func (d *SmartDetector) extractDependencies(pkg map[string]interface{}, key string) map[string]interface{} {
+
+    if deps, ok := pkg[key].(map[string]interface{}); ok {
+
+        return deps
+
+    }
+
+    return make(map[string]interface{})
+
 }
 
-func detectNodeStaticOutputDir(repoDir, framework string) string {
-	switch {
-	case fileExists(filepath.Join(repoDir, "dist")):
-		return "dist"
-	case fileExists(filepath.Join(repoDir, "build")):
-		return "build"
-	case framework == "next":
-		return ".next"
-	default:
-		return "dist"
-	}
+
+
+// ==================== PYTHON DETECTION ====================
+
+
+
+func (d *SmartDetector) detectPython(config *ProjectConfig) (bool, error) {
+
+    hasPipfile := d.hasFile("Pipfile")
+
+    hasRequirements := d.hasFile("requirements.txt")
+
+    hasPyproject := d.hasFile("pyproject.toml")
+
+
+
+    if !hasPipfile && !hasRequirements && !hasPyproject {
+
+        return false, nil
+
+    }
+
+
+
+    config.Language = "python"
+
+    config.Type = "python"
+
+
+
+    // Detect Python version
+
+    if d.hasFile("runtime.txt") {
+
+        content, _ := d.readFile("runtime.txt")
+
+        config.Version["python"] = d.extractPythonVersion(content)
+
+    } else if d.hasFile(".python-version") {
+
+        content, _ := d.readFile(".python-version")
+
+        config.Version["python"] = strings.TrimSpace(content)
+
+    }
+
+
+
+    if config.Version["python"] == "" {
+
+        config.Version["python"] = "3.11"
+
+    }
+
+
+
+    // Detect framework
+
+    if d.hasFile("manage.py") {
+
+        config.Framework = "django"
+
+        config.Type = "python-django"
+
+        config.Port = 8000
+
+        config.BuildFile = "manage.py"
+
+    } else if hasRequirements {
+
+        content, _ := d.readFile("requirements.txt")
+
+        if strings.Contains(content, "flask") {
+
+            config.Framework = "flask"
+
+            config.Type = "python-flask"
+
+            config.Port = 5000
+
+        } else if strings.Contains(content, "fastapi") {
+
+            config.Framework = "fastapi"
+
+            config.Type = "python-fastapi"
+
+            config.Port = 8000
+
+        } else if strings.Contains(content, "streamlit") {
+
+            config.Framework = "streamlit"
+
+            config.Type = "python-streamlit"
+
+            config.Port = 8501
+
+        }
+
+        config.BuildFile = "requirements.txt"
+
+    } else if hasPyproject {
+
+        config.BuildFile = "pyproject.toml"
+
+    } else if hasPipfile {
+
+        config.BuildFile = "Pipfile"
+
+    }
+
+
+
+    return true, nil
+
 }
 
-func nodeRunScript(packageManager, script string) string {
-	switch packageManager {
-	case "pnpm":
-		return fmt.Sprintf("pnpm %s", script)
-	case "yarn":
-		return fmt.Sprintf("yarn %s", script)
-	case "bun":
-		return fmt.Sprintf("bun run %s", script)
-	default:
-		return fmt.Sprintf("npm run %s", script)
-	}
+
+
+func (d *SmartDetector) extractPythonVersion(content string) string {
+
+    re := regexp.MustCompile(`python-(\d+\.\d+(?:\.\d+)?)`)
+
+    matches := re.FindStringSubmatch(content)
+
+    if len(matches) > 1 {
+
+        return matches[1]
+
+    }
+
+    return ""
+
 }
 
-func nodeStartCommand(packageManager string, pkg packageJSON, framework string) string {
-	if _, ok := pkg.Scripts["start"]; ok {
-		return nodeRunScript(packageManager, "start")
-	}
-	if framework == "next" {
-		return "npx next start -H 0.0.0.0 -p 3000"
-	}
-	if framework == "nuxt" {
-		return "npx nuxt start --host 0.0.0.0 --port 3000"
-	}
-	if framework == "nestjs" {
-		if _, ok := pkg.Scripts["start:prod"]; ok {
-			return nodeRunScript(packageManager, "start:prod")
-		}
-		return "node dist/main.js"
-	}
-	if strings.TrimSpace(pkg.Main) != "" {
-		return fmt.Sprintf("node %s", pkg.Main)
-	}
-	if _, ok := pkg.Scripts["dev"]; ok {
-		return nodeRunScript(packageManager, "dev") + " -- --host 0.0.0.0 --port 3000"
-	}
-	return "node server.js"
+
+
+// ==================== GO DETECTION ====================
+
+
+
+func (d *SmartDetector) detectGo(config *ProjectConfig) (bool, error) {
+
+    if !d.hasFile("go.mod") {
+
+        return false, nil
+
+    }
+
+
+
+    config.Language = "go"
+
+    config.Type = "go"
+
+    config.BuildFile = "go.mod"
+
+    config.Port = 8080
+
+
+
+    content, err := d.readFile("go.mod")
+
+    if err != nil {
+
+        return true, err
+
+    }
+
+
+
+    // Extract Go version
+
+    re := regexp.MustCompile(`go\s+(\d+\.\d+)`)
+
+    matches := re.FindStringSubmatch(content)
+
+    if len(matches) > 1 {
+
+        config.Version["go"] = matches[1]
+
+    } else {
+
+        config.Version["go"] = "1.21"
+
+    }
+
+
+
+    // Detect frameworks
+
+    if strings.Contains(content, "github.com/gin-gonic/gin") {
+
+        config.Framework = "gin"
+
+    } else if strings.Contains(content, "github.com/gofiber/fiber") {
+
+        config.Framework = "fiber"
+
+    } else if strings.Contains(content, "github.com/labstack/echo") {
+
+        config.Framework = "echo"
+
+    }
+
+
+
+    return true, nil
+
 }
 
-func detectJavaFramework(repoDir string) string {
-	content := strings.ToLower(readOptional(filepath.Join(repoDir, "pom.xml")) + readOptional(filepath.Join(repoDir, "build.gradle")) + readOptional(filepath.Join(repoDir, "build.gradle.kts")))
-	if strings.Contains(content, "spring-boot") || strings.Contains(content, "springframework.boot") {
-		return "spring-boot"
-	}
-	return "java"
+
+
+// ==================== RUST DETECTION ====================
+
+
+
+func (d *SmartDetector) detectRust(config *ProjectConfig) (bool, error) {
+
+    if !d.hasFile("Cargo.toml") {
+
+        return false, nil
+
+    }
+
+
+
+    config.Language = "rust"
+
+    config.Type = "rust"
+
+    config.BuildFile = "Cargo.toml"
+
+    config.Port = 8080
+
+
+
+    content, err := d.readFile("Cargo.toml")
+
+    if err != nil {
+
+        return true, err
+
+    }
+
+
+
+    // Detect frameworks
+
+    if strings.Contains(content, "actix-web") {
+
+        config.Framework = "actix"
+
+    } else if strings.Contains(content, "rocket") {
+
+        config.Framework = "rocket"
+
+    } else if strings.Contains(content, "warp") {
+
+        config.Framework = "warp"
+
+    }
+
+
+
+    return true, nil
+
 }
 
-func detectJavaVersion(paths ...string) string {
-	joined := ""
-	for _, path := range paths {
-		joined += "\n" + readOptional(path)
-	}
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`<java.version>([^<]+)</java.version>`),
-		regexp.MustCompile(`sourceCompatibility\s*=\s*['"]?([0-9]+(?:\.[0-9]+)?)`),
-		regexp.MustCompile(`targetCompatibility\s*=\s*['"]?([0-9]+(?:\.[0-9]+)?)`),
-		regexp.MustCompile(`JavaLanguageVersion\.of\(([0-9]+)\)`),
-	}
-	for _, pattern := range patterns {
-		if match := pattern.FindStringSubmatch(joined); len(match) == 2 {
-			return match[1]
-		}
-	}
-	return "17"
+
+
+// ==================== PHP DETECTION ====================
+
+
+
+func (d *SmartDetector) detectPHP(config *ProjectConfig) (bool, error) {
+
+    if !d.hasFile("composer.json") && !d.hasFile("index.php") {
+
+        return false, nil
+
+    }
+
+
+
+    config.Language = "php"
+
+    config.Type = "php"
+
+    config.Port = 8000
+
+
+
+    if d.hasFile("composer.json") {
+
+        config.BuildFile = "composer.json"
+
+        content, _ := d.readFile("composer.json")
+
+
+
+        if strings.Contains(content, "laravel/framework") {
+
+            config.Framework = "laravel"
+
+            config.Type = "php-laravel"
+
+        } else if strings.Contains(content, "symfony/symfony") {
+
+            config.Framework = "symfony"
+
+            config.Type = "php-symfony"
+
+        }
+
+    }
+
+
+
+    // Detect PHP version
+
+    if d.hasFile(".php-version") {
+
+        content, _ := d.readFile(".php-version")
+
+        config.Version["php"] = strings.TrimSpace(content)
+
+    } else {
+
+        config.Version["php"] = "8.2"
+
+    }
+
+
+
+    return true, nil
+
 }
 
-func detectRequiresPython(pyprojectPath string) string {
-	content := readOptional(pyprojectPath)
-	if match := regexp.MustCompile(`requires-python\s*=\s*"([^"]+)"`).FindStringSubmatch(content); len(match) == 2 {
-		return match[1]
-	}
-	return ""
+
+
+// ==================== RUBY DETECTION ====================
+
+
+
+func (d *SmartDetector) detectRuby(config *ProjectConfig) (bool, error) {
+
+    if !d.hasFile("Gemfile") {
+
+        return false, nil
+
+    }
+
+
+
+    config.Language = "ruby"
+
+    config.Type = "ruby"
+
+    config.BuildFile = "Gemfile"
+
+    config.Port = 3000
+
+
+
+    content, _ := d.readFile("Gemfile")
+
+
+
+    if strings.Contains(content, "rails") {
+
+        config.Framework = "rails"
+
+        config.Type = "ruby-rails"
+
+    } else if strings.Contains(content, "sinatra") {
+
+        config.Framework = "sinatra"
+
+    }
+
+
+
+    // Detect Ruby version
+
+    if d.hasFile(".ruby-version") {
+
+        version, _ := d.readFile(".ruby-version")
+
+        config.Version["ruby"] = strings.TrimSpace(version)
+
+    } else {
+
+        config.Version["ruby"] = "3.2"
+
+    }
+
+
+
+    return true, nil
+
 }
 
-func sanitizeNodeVersion(version string) string {
-	if match := regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)`).FindStringSubmatch(version); len(match) == 2 {
-		return match[1]
-	}
-	return "20"
+
+
+// ==================== .NET DETECTION ====================
+
+
+
+func (d *SmartDetector) detectDotNet(config *ProjectConfig) (bool, error) {
+
+    // Check for .csproj or .fsproj files
+
+    csprojFiles, _ := filepath.Glob(filepath.Join(d.repoDir, "*.csproj"))
+
+    fsprojFiles, _ := filepath.Glob(filepath.Join(d.repoDir, "*.fsproj"))
+
+
+
+    if len(csprojFiles) == 0 && len(fsprojFiles) == 0 {
+
+        return false, nil
+
+    }
+
+
+
+    config.Language = "csharp"
+
+    config.Type = "dotnet"
+
+    config.Port = 5000
+
+
+
+    if len(csprojFiles) > 0 {
+
+        config.BuildFile = filepath.Base(csprojFiles[0])
+
+    } else {
+
+        config.BuildFile = filepath.Base(fsprojFiles[0])
+
+    }
+
+
+
+    // Detect .NET version
+
+    config.Version["dotnet"] = "8.0"
+
+
+
+    return true, nil
+
 }
 
-func sanitizePythonVersion(version string) string {
-	if match := regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)`).FindStringSubmatch(version); len(match) == 2 {
-		return match[1]
-	}
-	return "3.11"
+
+
+// ==================== HELPER METHODS ====================
+
+
+
+func (d *SmartDetector) hasFile(filename string) bool {
+
+    _, err := os.Stat(filepath.Join(d.repoDir, filename))
+
+    return err == nil
+
 }
 
-func sanitizeJavaVersion(version string) string {
-	if match := regexp.MustCompile(`([0-9]+)`).FindStringSubmatch(version); len(match) == 2 {
-		switch match[1] {
-		case "8", "11", "17", "21":
-			return match[1]
-		default:
-			return "17"
-		}
-	}
-	return "17"
+
+
+func (d *SmartDetector) readFile(filename string) (string, error) {
+
+    content, err := os.ReadFile(filepath.Join(d.repoDir, filename))
+
+    if err != nil {
+
+        return "", err
+
+    }
+
+    return string(content), nil
+
 }
 
-func mergePackageMaps(maps ...map[string]string) map[string]string {
-	out := make(map[string]string)
-	for _, current := range maps {
-		for key, value := range current {
-			out[key] = value
-		}
-	}
-	return out
-}
 
-func readOptional(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
 
-func readTrimmedFile(path string) string {
-	return strings.TrimSpace(readOptional(path))
-}
+func (d *SmartDetector) extractVersionNumber(version string) string {
 
-func firstExisting(repoDir string, names ...string) string {
-	for _, name := range names {
-		if fileExists(filepath.Join(repoDir, name)) {
-			return name
-		}
-	}
-	return ""
-}
+    // Remove ^, ~, >=, etc.
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			return value
-		}
-	}
-	return ""
+    cleaned := strings.TrimSpace(version)
+
+    cleaned = strings.TrimPrefix(cleaned, "^")
+
+    cleaned = strings.TrimPrefix(cleaned, "~")
+
+    cleaned = strings.TrimPrefix(cleaned, ">=")
+
+    cleaned = strings.TrimPrefix(cleaned, ">")
+
+
+
+    re := regexp.MustCompile(`(\d+(?:\.\d+)?)`)
+
+    matches := re.FindStringSubmatch(cleaned)
+
+    if len(matches) > 0 {
+
+        return matches[0]
+
+    }
+
+    return cleaned
+
 }

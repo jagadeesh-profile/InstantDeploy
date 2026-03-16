@@ -61,6 +61,7 @@ $backendCommand = @"
 `$env:PORT = "$BackendPort"
 `$env:DATABASE_URL = "postgres://instantdeploy_user:instantdeploy_pass@localhost:5432/instantdeploy?sslmode=disable"
 `$env:REDIS_ADDR = "localhost:6379"
+`$env:BUILD_QUEUE_KEY = "instantdeploy:build_queue:local"
 go -C "$backendDir" run ./cmd/server
 "@
 

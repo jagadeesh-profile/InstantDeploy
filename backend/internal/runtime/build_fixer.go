@@ -1,336 +1,779 @@
 package runtime
 
+
+
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
+
+    "fmt"
+
+    "os"
+
+    "path/filepath"
+
+    "regexp"
+
+    "strings"
+
 )
 
-type RuntimeLogger func(level, message string)
+
+
+// BuildFixer fixes problematic build files across all languages
 
 type BuildFixer struct {
-	logf RuntimeLogger
+
+    repoDir string
+
+    config  *ProjectConfig
+
 }
 
-func NewBuildFixer(logf RuntimeLogger) *BuildFixer {
-	return &BuildFixer{logf: logf}
+
+
+func NewBuildFixer(repoDir string, config *ProjectConfig) *BuildFixer {
+
+    return &BuildFixer{
+
+        repoDir: repoDir,
+
+        config:  config,
+
+    }
+
 }
 
-func (f *BuildFixer) Fix(repoDir string, project *DetectedProject) error {
-	if project == nil {
-		return nil
-	}
 
-	switch project.Kind {
-	case ProjectKindJavaGradle:
-		return f.fixGradle(repoDir)
-	case ProjectKindJavaMaven:
-		return f.fixMaven(repoDir)
-	case ProjectKindNode:
-		return f.fixNode(repoDir, project)
-	case ProjectKindPython:
-		return f.fixPython(repoDir, project)
-	case ProjectKindPHP:
-		return f.fixPHP(repoDir, project)
-	case ProjectKindRuby:
-		return f.fixRuby(repoDir, project)
-	default:
-		return nil
-	}
+
+// Fix applies all necessary fixes based on project type
+
+func (f *BuildFixer) Fix() error {
+
+    switch {
+
+    case strings.Contains(f.config.Type, "gradle"):
+
+        return f.fixGradle()
+
+    case strings.Contains(f.config.Type, "maven"):
+
+        return f.fixMaven()
+
+    case strings.Contains(f.config.Type, "node"):
+
+        return f.fixNode()
+
+    case strings.Contains(f.config.Type, "python"):
+
+        return f.fixPython()
+
+    case strings.Contains(f.config.Type, "php"):
+
+        return f.fixPHP()
+
+    case strings.Contains(f.config.Type, "ruby"):
+
+        return f.fixRuby()
+
+    }
+
+    return nil
+
 }
 
-func (f *BuildFixer) fixGradle(repoDir string) error {
-	files := []string{"build.gradle", "build.gradle.kts"}
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?im)^.*com\.palantir\.docker.*$`),
-		regexp.MustCompile(`(?im)^.*com\.google\.cloud\.tools\.jib.*$`),
-		regexp.MustCompile(`(?im)^.*com\.bmuschko\.docker.*$`),
-		regexp.MustCompile(`(?im)^.*bootBuildImage.*$`),
-		regexp.MustCompile(`(?im)^.*jib\s*\{.*$`),
-	}
 
-	for _, name := range files {
-		path := filepath.Join(repoDir, name)
-		if !fileExists(path) {
-			continue
-		}
-		originalBytes, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("failed to read %s: %w", name, err)
-		}
-		original := string(originalBytes)
-		updated := original
-		for _, pattern := range patterns {
-			updated = pattern.ReplaceAllStringFunc(updated, func(line string) string {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" || strings.HasPrefix(trimmed, "// instantdeploy:") {
-					return line
-				}
-				return "// instantdeploy: disabled incompatible docker plugin/task -> " + trimmed
-			})
-		}
-		if updated != original {
-			if err := f.backupAndWrite(path, updated); err != nil {
-				return err
-			}
-			f.log("warn", fmt.Sprintf("Patched %s to disable incompatible Docker-oriented Gradle plugins/tasks", name))
-		}
-	}
 
-	initScript := `allprojects {
-	gradle.taskGraph.whenReady { graph ->
-		tasks.each { task ->
-			def lowered = task.name.toLowerCase()
-			if (lowered.startsWith("docker") || lowered.startsWith("jib") || lowered == "bootbuildimage") {
-				task.enabled = false
-			}
-		}
-	}
+// ==================== GRADLE FIXES ====================
+
+
+
+func (f *BuildFixer) fixGradle() error {
+
+    // Fix build.gradle
+
+    if err := f.fixGradleBuildFile(); err != nil {
+
+        return err
+
+    }
+
+
+
+    // Fix settings.gradle
+
+    if err := f.fixGradleSettingsFile(); err != nil {
+
+        return err
+
+    }
+
+
+
+    // Create init.gradle override
+
+    if err := f.createGradleInitScript(); err != nil {
+
+        return err
+
+    }
+
+
+
+    return nil
+
 }
+
+
+
+func (f *BuildFixer) fixGradleBuildFile() error {
+
+    buildFile := filepath.Join(f.repoDir, "build.gradle")
+
+    buildFileKts := filepath.Join(f.repoDir, "build.gradle.kts")
+
+
+
+    targetFile := ""
+
+    if _, err := os.Stat(buildFile); err == nil {
+
+        targetFile = buildFile
+
+    } else if _, err := os.Stat(buildFileKts); err == nil {
+
+        targetFile = buildFileKts
+
+    } else {
+
+        return nil
+
+    }
+
+
+
+    content, err := os.ReadFile(targetFile)
+
+    if err != nil {
+
+        return err
+
+    }
+
+
+
+    original := string(content)
+
+    fixed := f.removeGradleProblematicPlugins(original)
+
+
+
+    if fixed != original {
+
+        // Backup original
+
+        os.WriteFile(targetFile+".backup", content, 0644)
+
+        
+
+        // Write fixed version
+
+        if err := os.WriteFile(targetFile, []byte(fixed), 0644); err != nil {
+
+            return err
+
+        }
+
+        
+
+        fmt.Println(" Fixed build.gradle - removed problematic plugins")
+
+    }
+
+
+
+    return nil
+
+}
+
+
+
+func (f *BuildFixer) removeGradleProblematicPlugins(content string) string {
+
+    lines := strings.Split(content, "\n")
+
+    fixedLines := []string{}
+
+
+
+    problematicPatterns := []string{
+
+        `com\.palantir\.docker`,
+
+        `com\.bmuschko\.docker`,
+
+        `gradle-docker`,
+
+        `docker-compose`,
+
+        `com\.google\.cloud\.tools\.jib`,
+
+        `nebula\.docker`,
+
+        `io\.spring\.dependency-management`, // Sometimes problematic
+
+    }
+
+
+
+    for _, line := range lines {
+
+        isProblematic := false
+
+        
+
+        for _, pattern := range problematicPatterns {
+
+            if matched, _ := regexp.MatchString(pattern, line); matched {
+
+                isProblematic = true
+
+                break
+
+            }
+
+        }
+
+
+
+        if isProblematic {
+
+            if !strings.HasPrefix(strings.TrimSpace(line), "//") {
+
+                fixedLines = append(fixedLines, "// DISABLED: "+line)
+
+            } else {
+
+                fixedLines = append(fixedLines, line)
+
+            }
+
+        } else {
+
+            fixedLines = append(fixedLines, line)
+
+        }
+
+    }
+
+
+
+    fixed := strings.Join(fixedLines, "\n")
+
+
+
+    // Remove docker task blocks
+
+    dockerTaskPattern := `(?s)docker\s*\{[^}]*\}`
+
+    re := regexp.MustCompile(dockerTaskPattern)
+
+    fixed = re.ReplaceAllString(fixed, "// Docker config removed")
+
+
+
+    return fixed
+
+}
+
+
+
+func (f *BuildFixer) fixGradleSettingsFile() error {
+
+    settingsFile := filepath.Join(f.repoDir, "settings.gradle")
+
+    if _, err := os.Stat(settingsFile); os.IsNotExist(err) {
+
+        settingsFile = filepath.Join(f.repoDir, "settings.gradle.kts")
+
+        if _, err := os.Stat(settingsFile); os.IsNotExist(err) {
+
+            return nil
+
+        }
+
+    }
+
+
+
+    content, err := os.ReadFile(settingsFile)
+
+    if err != nil {
+
+        return err
+
+    }
+
+
+
+    original := string(content)
+
+    fixed := regexp.MustCompile(`(?s)pluginManagement\s*\{[^}]*docker[^}]*\}`).
+
+        ReplaceAllString(original, "")
+
+
+
+    if fixed != original {
+
+        os.WriteFile(settingsFile+".backup", content, 0644)
+
+        os.WriteFile(settingsFile, []byte(fixed), 0644)
+
+    }
+
+
+
+    return nil
+
+}
+
+
+
+func (f *BuildFixer) createGradleInitScript() error {
+
+    initScript := `
+
+allprojects {
+
+    afterEvaluate { project ->
+
+        // Remove docker-related tasks
+
+        project.tasks.all { task ->
+
+            if (task.name.toLowerCase().contains('docker')) {
+
+                task.enabled = false
+
+            }
+
+        }
+
+        
+
+        // Remove problematic plugins
+
+        project.plugins.removeAll { plugin ->
+
+            def className = plugin.class.name.toLowerCase()
+
+            className.contains('docker') || 
+
+            className.contains('palantir') ||
+
+            className.contains('jib')
+
+        }
+
+    }
+
+}
+
 `
-	initPath := filepath.Join(repoDir, ".instantdeploy.init.gradle")
-	if err := os.WriteFile(initPath, []byte(initScript), 0o644); err != nil {
-		return fmt.Errorf("failed to write init.gradle: %w", err)
-	}
-	f.log("info", "Prepared Gradle init script to disable Docker-specific tasks during builds")
-	return nil
+
+    
+
+    initPath := filepath.Join(f.repoDir, "init.gradle")
+
+    return os.WriteFile(initPath, []byte(initScript), 0644)
+
 }
 
-func (f *BuildFixer) fixMaven(repoDir string) error {
-	path := filepath.Join(repoDir, "pom.xml")
-	if !fileExists(path) {
-		return nil
-	}
 
-	originalBytes, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read pom.xml: %w", err)
-	}
-	original := string(originalBytes)
-	updated := original
-	pluginPatterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?is)<plugin>\s*<groupId>com\.google\.cloud\.tools</groupId>\s*<artifactId>jib-maven-plugin</artifactId>.*?</plugin>`),
-		regexp.MustCompile(`(?is)<plugin>\s*<groupId>io\.fabric8</groupId>\s*<artifactId>docker-maven-plugin</artifactId>.*?</plugin>`),
-		regexp.MustCompile(`(?is)<plugin>\s*<groupId>com\.spotify</groupId>\s*<artifactId>dockerfile-maven-plugin</artifactId>.*?</plugin>`),
-	}
-	for _, pattern := range pluginPatterns {
-		updated = pattern.ReplaceAllString(updated, "<!-- instantdeploy: removed incompatible docker plugin -->")
-	}
-	if updated != original {
-		if err := f.backupAndWrite(path, updated); err != nil {
-			return err
-		}
-		f.log("warn", "Patched pom.xml to remove incompatible Docker build plugins")
-	}
-	return nil
+
+// ==================== MAVEN FIXES ====================
+
+
+
+func (f *BuildFixer) fixMaven() error {
+
+    pomPath := filepath.Join(f.repoDir, "pom.xml")
+
+    content, err := os.ReadFile(pomPath)
+
+    if err != nil {
+
+        return err
+
+    }
+
+
+
+    original := string(content)
+
+    fixed := original
+
+
+
+    // Remove docker plugins
+
+    pluginPatterns := []string{
+
+        `(?s)<plugin>.*?docker-maven-plugin.*?</plugin>`,
+
+        `(?s)<plugin>.*?jib-maven-plugin.*?</plugin>`,
+
+        `(?s)<plugin>.*?fabric8.*?</plugin>`,
+
+    }
+
+
+
+    for _, pattern := range pluginPatterns {
+
+        re := regexp.MustCompile(pattern)
+
+        fixed = re.ReplaceAllString(fixed, "<!-- Docker plugin removed -->")
+
+    }
+
+
+
+    if fixed != original {
+
+        os.WriteFile(pomPath+".backup", content, 0644)
+
+        os.WriteFile(pomPath, []byte(fixed), 0644)
+
+        fmt.Println(" Fixed pom.xml - removed docker plugins")
+
+    }
+
+
+
+    return nil
+
 }
 
-func (f *BuildFixer) fixNode(repoDir string, project *DetectedProject) error {
-	path := filepath.Join(repoDir, "package.json")
-	if !fileExists(path) {
-		return nil
-	}
 
-	originalBytes, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read package.json: %w", err)
-	}
 
-	var pkg map[string]any
-	if err := json.Unmarshal(originalBytes, &pkg); err != nil {
-		return fmt.Errorf("failed to parse package.json: %w", err)
-	}
+// ==================== NODE.JS FIXES ====================
 
-	changed := false
-	if engines, ok := pkg["engines"].(map[string]any); ok {
-		if node, ok := engines["node"].(string); ok && strings.Contains(node, "||") {
-			engines["node"] = strings.TrimSpace(strings.Split(node, "||")[0])
-			changed = true
-		}
-	}
 
-	if scripts, ok := pkg["scripts"].(map[string]any); ok {
-		for _, key := range []string{"preinstall", "postinstall"} {
-			if script, exists := scripts[key].(string); exists {
-				lowered := strings.ToLower(script)
-				if strings.Contains(lowered, "docker") || strings.Contains(lowered, "buildkit") {
-					delete(scripts, key)
-					changed = true
-				}
-			}
-		}
-	}
 
-	if changed {
-		encoded, err := json.MarshalIndent(pkg, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to write fixed package.json: %w", err)
-		}
-		if err := f.backupAndWrite(path, string(encoded)+"\n"); err != nil {
-			return err
-		}
-		f.log("warn", "Patched package.json to avoid install hooks that commonly fail in container builds")
-	}
+func (f *BuildFixer) fixNode() error {
 
-	if project != nil && project.PackageManager == "pnpm" && !fileExists(filepath.Join(repoDir, "pnpm-lock.yaml")) {
-		f.log("warn", "pnpm project detected without lockfile; build will fall back to a non-frozen install")
-	}
-	return nil
+    pkgPath := filepath.Join(f.repoDir, "package.json")
+
+    content, err := os.ReadFile(pkgPath)
+
+    if err != nil {
+
+        return err
+
+    }
+
+
+
+    var pkg map[string]interface{}
+
+    if err := json.Unmarshal(content, &pkg); err != nil {
+
+        return err
+
+    }
+
+
+
+    modified := false
+
+
+
+    // Fix restrictive engine requirements
+
+    if engines, ok := pkg["engines"].(map[string]interface{}); ok {
+
+        if node, ok := engines["node"].(string); ok {
+
+            if strings.Contains(node, "^") || strings.Contains(node, "~") {
+
+                engines["node"] = ">=" + strings.TrimLeft(node, "^~")
+
+                modified = true
+
+            }
+
+        }
+
+    }
+
+
+
+    // Remove problematic scripts
+
+    if scripts, ok := pkg["scripts"].(map[string]interface{}); ok {
+
+        problematicScripts := []string{"prepare", "preinstall", "postinstall"}
+
+        for _, script := range problematicScripts {
+
+            if _, exists := scripts[script]; exists {
+
+                delete(scripts, script)
+
+                modified = true
+
+            }
+
+        }
+
+    }
+
+
+
+    if modified {
+
+        fixed, _ := json.MarshalIndent(pkg, "", "  ")
+
+        os.WriteFile(pkgPath+".backup", content, 0644)
+
+        os.WriteFile(pkgPath, fixed, 0644)
+
+        fmt.Println(" Fixed package.json")
+
+    }
+
+
+
+    return nil
+
 }
 
-func (f *BuildFixer) fixPython(repoDir string, project *DetectedProject) error {
-	reqPath := filepath.Join(repoDir, "requirements.txt")
-	if fileExists(reqPath) {
-		originalBytes, err := os.ReadFile(reqPath)
-		if err != nil {
-			return fmt.Errorf("failed to read requirements.txt: %w", err)
-		}
-		original := string(originalBytes)
-		lines := strings.Split(original, "\n")
-		changed := false
-		for i := range lines {
-			line := lines[i]
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.Contains(trimmed, "git+") {
-				continue
-			}
-			if strings.Contains(line, "==") {
-				lines[i] = strings.Replace(line, "==", ">=", 1)
-				changed = true
-			}
-		}
-		if changed {
-			if err := f.backupAndWrite(reqPath, strings.Join(lines, "\n")); err != nil {
-				return err
-			}
-			f.log("warn", "Relaxed pinned requirements in requirements.txt to reduce dependency resolution failures")
-		}
-	}
 
-	pyprojectPath := filepath.Join(repoDir, "pyproject.toml")
-	if fileExists(pyprojectPath) {
-		originalBytes, err := os.ReadFile(pyprojectPath)
-		if err != nil {
-			return fmt.Errorf("failed to read pyproject.toml: %w", err)
-		}
-		original := string(originalBytes)
-		updated := strings.ReplaceAll(original, "==", ">=")
-		if updated != original {
-			if err := f.backupAndWrite(pyprojectPath, updated); err != nil {
-				return err
-			}
-			f.log("warn", "Relaxed exact dependency constraints in pyproject.toml")
-		}
-	}
 
-	_ = project
-	return nil
+// ==================== PYTHON FIXES ====================
+
+
+
+func (f *BuildFixer) fixPython() error {
+
+    reqPath := filepath.Join(f.repoDir, "requirements.txt")
+
+    if _, err := os.Stat(reqPath); os.IsNotExist(err) {
+
+        return nil
+
+    }
+
+
+
+    content, err := os.ReadFile(reqPath)
+
+    if err != nil {
+
+        return err
+
+    }
+
+
+
+    lines := strings.Split(string(content), "\n")
+
+    fixedLines := []string{}
+
+    modified := false
+
+
+
+    for _, line := range lines {
+
+        trimmed := strings.TrimSpace(line)
+
+        
+
+        // Keep comments and empty lines
+
+        if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+
+            fixedLines = append(fixedLines, line)
+
+            continue
+
+        }
+
+
+
+        // Convert exact versions to minimum versions
+
+        if strings.Contains(trimmed, "==") {
+
+            parts := strings.Split(trimmed, "==")
+
+            fixedLines = append(fixedLines, parts[0]+">="+parts[1])
+
+            modified = true
+
+        } else {
+
+            fixedLines = append(fixedLines, line)
+
+        }
+
+    }
+
+
+
+    if modified {
+
+        fixed := strings.Join(fixedLines, "\n")
+
+        os.WriteFile(reqPath+".backup", content, 0644)
+
+        os.WriteFile(reqPath, []byte(fixed), 0644)
+
+        fmt.Println(" Fixed requirements.txt")
+
+    }
+
+
+
+    return nil
+
 }
 
-func (f *BuildFixer) fixPHP(repoDir string, project *DetectedProject) error {
-	path := filepath.Join(repoDir, "composer.json")
-	if !fileExists(path) {
-		_ = project
-		return nil
-	}
 
-	originalBytes, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read composer.json: %w", err)
-	}
 
-	var composer map[string]any
-	if err := json.Unmarshal(originalBytes, &composer); err != nil {
-		return fmt.Errorf("failed to parse composer.json: %w", err)
-	}
+// ==================== PHP FIXES ====================
 
-	changed := false
-	if req, ok := composer["require"].(map[string]any); ok {
-		if php, ok := req["php"].(string); ok {
-			php = strings.TrimSpace(php)
-			if strings.HasPrefix(php, "=") {
-				req["php"] = ">=" + strings.TrimPrefix(php, "=")
-				changed = true
-			}
-		}
-	}
 
-	if changed {
-		encoded, err := json.MarshalIndent(composer, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to write fixed composer.json: %w", err)
-		}
-		if err := f.backupAndWrite(path, string(encoded)+"\n"); err != nil {
-			return err
-		}
-		f.log("warn", "Relaxed PHP runtime version constraint in composer.json")
-	}
 
-	_ = project
-	return nil
+func (f *BuildFixer) fixPHP() error {
+
+    composerPath := filepath.Join(f.repoDir, "composer.json")
+
+    if _, err := os.Stat(composerPath); os.IsNotExist(err) {
+
+        return nil
+
+    }
+
+
+
+    content, err := os.ReadFile(composerPath)
+
+    if err != nil {
+
+        return err
+
+    }
+
+
+
+    var composer map[string]interface{}
+
+    if err := json.Unmarshal(content, &composer); err != nil {
+
+        return err
+
+    }
+
+
+
+    modified := false
+
+
+
+    // Relax PHP version requirement
+
+    if require, ok := composer["require"].(map[string]interface{}); ok {
+
+        if php, ok := require["php"].(string); ok {
+
+            if strings.Contains(php, "^") {
+
+                require["php"] = ">=" + strings.TrimPrefix(php, "^")
+
+                modified = true
+
+            }
+
+        }
+
+    }
+
+
+
+    if modified {
+
+        fixed, _ := json.MarshalIndent(composer, "", "  ")
+
+        os.WriteFile(composerPath+".backup", content, 0644)
+
+        os.WriteFile(composerPath, fixed, 0644)
+
+        fmt.Println(" Fixed composer.json")
+
+    }
+
+
+
+    return nil
+
 }
 
-func (f *BuildFixer) fixRuby(repoDir string, project *DetectedProject) error {
-	gemfilePath := filepath.Join(repoDir, "Gemfile")
-	if fileExists(gemfilePath) {
-		originalBytes, err := os.ReadFile(gemfilePath)
-		if err != nil {
-			return fmt.Errorf("failed to read Gemfile: %w", err)
-		}
-		original := string(originalBytes)
-		// Convert strict `ruby "x.y.z"` declarations to a compatible lower bound.
-		re := regexp.MustCompile(`(?m)^\s*ruby\s+['"]([0-9]+\.[0-9]+(?:\.[0-9]+)?)['"]\s*$`)
-		updated := re.ReplaceAllString(original, `ruby ">= $1"`)
-		if updated != original {
-			if err := f.backupAndWrite(gemfilePath, updated); err != nil {
-				return err
-			}
-			f.log("warn", "Relaxed strict Ruby version declaration in Gemfile")
-		}
-	}
 
-	rubyVersionPath := filepath.Join(repoDir, ".ruby-version")
-	if fileExists(rubyVersionPath) {
-		version := strings.TrimSpace(readOptional(rubyVersionPath))
-		if strings.Count(version, ".") >= 2 {
-			parts := strings.Split(version, ".")
-			if len(parts) >= 2 {
-				relaxed := parts[0] + "." + parts[1]
-				if relaxed != version {
-					if err := f.backupAndWrite(rubyVersionPath, relaxed+"\n"); err != nil {
-						return err
-					}
-					f.log("warn", "Relaxed .ruby-version patch level to improve image compatibility")
-				}
-			}
-		}
-	}
 
-	_ = project
-	return nil
-}
+// ==================== RUBY FIXES ====================
 
-func (f *BuildFixer) backupAndWrite(path, updated string) error {
-	backupPath := path + ".instantdeploy.bak"
-	if !fileExists(backupPath) {
-		originalBytes, err := os.ReadFile(path)
-		if err == nil {
-			if err := os.WriteFile(backupPath, originalBytes, 0o644); err != nil {
-				return fmt.Errorf("failed to write backup for %s: %w", filepath.Base(path), err)
-			}
-		}
-	}
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
-		return fmt.Errorf("failed to write %s: %w", filepath.Base(path), err)
-	}
-	return nil
-}
 
-func (f *BuildFixer) log(level, message string) {
-	if f.logf != nil {
-		f.logf(level, message)
-	}
+
+func (f *BuildFixer) fixRuby() error {
+
+    gemfilePath := filepath.Join(f.repoDir, "Gemfile")
+
+    if _, err := os.Stat(gemfilePath); os.IsNotExist(err) {
+
+        return nil
+
+    }
+
+
+
+    content, err := os.ReadFile(gemfilePath)
+
+    if err != nil {
+
+        return err
+
+    }
+
+
+
+    original := string(content)
+
+    fixed := original
+
+
+
+    // Relax Ruby version
+
+    re := regexp.MustCompile(`ruby ['"]~>([^'"]+)['"]`)
+
+    fixed = re.ReplaceAllString(fixed, "ruby '>=$1'")
+
+
+
+    if fixed != original {
+
+        os.WriteFile(gemfilePath+".backup", content, 0644)
+
+        os.WriteFile(gemfilePath, []byte(fixed), 0644)
+
+        fmt.Println(" Fixed Gemfile")
+
+    }
+
+
+
+    return nil
+
 }

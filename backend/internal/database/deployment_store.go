@@ -175,6 +175,26 @@ VALUES ($1, $2, $3, $4)`, deploymentID, log.Time, log.Level, log.Message)
 	return err
 }
 
+func (s *DeploymentStore) GetDeployment(id string) (models.Deployment, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var d models.Deployment
+	err := s.pool.QueryRow(ctx, `
+SELECT id, repository, branch, status, url, local_url, repo_url, image, container, error, created_at
+FROM deployments WHERE id = $1`, id).Scan(
+		&d.ID, &d.Repository, &d.Branch, &d.Status, &d.URL,
+		&d.LocalURL, &d.RepoURL, &d.Image, &d.Container, &d.Error, &d.CreatedAt,
+	)
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			return models.Deployment{}, false, nil
+		}
+		return models.Deployment{}, false, err
+	}
+	return d, true, nil
+}
+
 func (s *DeploymentStore) DeleteDeployment(deploymentID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

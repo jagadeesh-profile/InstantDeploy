@@ -9,6 +9,7 @@ services:
       JWT_EXPIRY_MINUTES: 120
       DATABASE_URL: postgres://instantdeploy_user:instantdeploy_pass@postgres:5432/instantdeploy?sslmode=disable
       REDIS_ADDR: redis:6379
+      BUILD_QUEUE_KEY: instantdeploy:build_queue:docker
       BUILD_TIMEOUT: 900
       MAX_BUILD_RETRIES: 3
     ports:
