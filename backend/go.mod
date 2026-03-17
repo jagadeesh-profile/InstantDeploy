@@ -36,6 +36,6 @@ replace (
 	golang.org/x/sys            => github.com/golang/sys v0.25.0
 	golang.org/x/text           => github.com/golang/text v0.18.0
 	google.golang.org/protobuf  => github.com/protocolbuffers/protobuf-go v1.34.2
-	gopkg.in/yaml.v3            => github.com/go-yaml/yaml v3.0.1+incompatible
+	gopkg.in/yaml.v3            => github.com/go-yaml/yaml/v3 v3.0.1
 	gopkg.in/check.v1           => github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e
 )

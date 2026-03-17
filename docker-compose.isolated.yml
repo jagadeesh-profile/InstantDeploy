@@ -1,307 +1,143 @@
 version: '3.8'
 
-
-
 services:
 
   # PostgreSQL Database
-
   postgres:
-
     image: postgres:15-alpine
-
     container_name: instantdeploy-postgres-isolated
-
     environment:
-
       POSTGRES_USER: instantdeploy_user
-
       POSTGRES_PASSWORD: instantdeploy_pass
-
       POSTGRES_DB: instantdeploy
-
     ports:
-
       - "5432:5432"
-
     volumes:
-
       - postgres_data:/var/lib/postgresql/data
-
       - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
-
     healthcheck:
-
       test: ["CMD-SHELL", "pg_isready -U instantdeploy_user"]
-
       interval: 10s
-
       timeout: 5s
-
       retries: 5
-
     networks:
-
       - instantdeploy-network
-
-
 
   # Redis Cache & Queue
-
   redis:
-
     image: redis:7-alpine
-
     container_name: instantdeploy-redis-isolated
-
     ports:
-
       - "6379:6379"
-
     volumes:
-
       - redis_data:/data
-
     command: redis-server --appendonly yes
-
     healthcheck:
-
       test: ["CMD", "redis-cli", "ping"]
-
       interval: 10s
-
       timeout: 3s
-
       retries: 5
-
     networks:
-
       - instantdeploy-network
 
-
-
-  # InstantDeploy Backend (with Docker-in-Docker capability)
-
+  # InstantDeploy Backend
   backend:
-
     build:
-
       context: .
-
       dockerfile: Dockerfile.backend
-
     container_name: instantdeploy-backend-isolated
-
     ports:
-
-      - "8082:8082"
-
+      - "8082:8080"
     environment:
-
-      # Database
-
-      DB_HOST: postgres
-
-      DB_PORT: 5432
-
-      DB_USER: instantdeploy_user
-
-      DB_PASSWORD: instantdeploy_pass
-
-      DB_NAME: instantdeploy
-
-      AUTO_MIGRATE: "true"
-
-      
+      # Database - single URL (what config.go reads)
+      DATABASE_URL: postgres://instantdeploy_user:instantdeploy_pass@postgres:5432/instantdeploy?sslmode=disable
 
       # Redis
-
       REDIS_ADDR: redis:6379
 
-      REDIS_PASSWORD: ""
-
-      
-
-      # Server
-
-      PORT: 8082
-
+      # Server (internal port stays 8080)
+      PORT: 8080
       ENV: development
 
-      
-
-      # Build Queue
-
+      # Build settings
       BUILD_WORKERS: 3
-
       BUILD_TIMEOUT: 900
-
       MAX_BUILD_RETRIES: 3
 
-      
-
-      # Docker (connects to host Docker)
-
+      # Docker socket
       DOCKER_HOST: unix:///var/run/docker.sock
 
-      
-
       # Security
-
-      JWT_SECRET: your-secret-key-change-this
+      JWT_SECRET: your-secret-key-change-this-to-something-long-random
 
     volumes:
-
-      # Share Docker socket (allows backend to control Docker)
-
       - /var/run/docker.sock:/var/run/docker.sock
-
-      
-
-      # Persistent storage for builds (Linux paths inside container)
-
       - build_cache:/tmp/builds
-
       - app_data:/app/data
-
     depends_on:
-
       postgres:
-
         condition: service_healthy
-
       redis:
-
         condition: service_healthy
-
     networks:
-
       - instantdeploy-network
-
     restart: unless-stopped
-
-
 
   # Frontend (React App)
-
   frontend:
-
     build:
-
       context: ./frontend
-
       dockerfile: Dockerfile.frontend
-
+      args:
+        VITE_API_URL: http://localhost:8082
     container_name: instantdeploy-frontend-isolated
-
     ports:
-
       - "3000:80"
-
-    environment:
-
-      VITE_API_URL: http://localhost:8082
-
     depends_on:
-
       - backend
-
     networks:
-
       - instantdeploy-network
-
     restart: unless-stopped
 
-
-
-  # Prometheus (Optional - Monitoring)
-
+  # Prometheus
   prometheus:
-
     image: prom/prometheus:latest
-
     container_name: instantdeploy-prometheus-isolated
-
     ports:
-
       - "9090:9090"
-
     volumes:
-
       - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-
       - prometheus_data:/prometheus
-
     command:
-
       - '--config.file=/etc/prometheus/prometheus.yml'
-
       - '--storage.tsdb.path=/prometheus'
-
     networks:
-
       - instantdeploy-network
 
-
-
-  # Grafana (Optional - Dashboards)
-
+  # Grafana
   grafana:
-
     image: grafana/grafana:latest
-
     container_name: instantdeploy-grafana-isolated
-
     ports:
-
       - "3001:3000"
-
     environment:
-
       - GF_SECURITY_ADMIN_PASSWORD=admin
-
       - GF_USERS_ALLOW_SIGN_UP=false
-
     volumes:
-
       - grafana_data:/var/lib/grafana
-
     depends_on:
-
       - prometheus
-
     networks:
-
       - instantdeploy-network
-
-
 
 networks:
-
   instantdeploy-network:
-
     driver: bridge
 
-
-
 volumes:
-
   postgres_data:
-
   redis_data:
-
   prometheus_data:
-
   grafana_data:
-
   build_cache:
-
   app_data:
-
-
-
-
-
-================================================================================
-
-PART 2: BACKEND DOCKERFILE (ALPINE LINUX + GO + DOCKER CLI)

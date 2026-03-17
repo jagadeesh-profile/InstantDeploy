@@ -825,15 +825,17 @@ func checkDockerDaemonAvailable() error {
 		)
 	}
 
-	// Check socket is readable (permission issue)
-	f, err := os.OpenFile(socketPath, os.O_RDWR, os.ModeSocket)
+	// Validate we can connect to the unix socket. Opening socket files with
+	// os.OpenFile can fail on some Docker Desktop setups even when Docker is
+	// actually reachable, causing false negatives.
+	conn, err := net.DialTimeout("unix", socketPath, 3*time.Second)
 	if err != nil {
 		return fmt.Errorf(
 			"Docker socket exists but is not accessible (permission denied) — add 'group_add: [\"999\"]' to the backend service in docker-compose.yml, or run the container as root: %v",
 			err,
 		)
 	}
-	f.Close()
+	_ = conn.Close()
 
 	// Actually ping the daemon
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -4,7 +4,7 @@ metadata:
   name: instantdeploy-frontend
   namespace: instantdeploy
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: instantdeploy-frontend
   ports:
@@ -12,3 +12,4 @@ spec:
       protocol: TCP
       port: 80
       targetPort: http
+      nodePort: 30000
