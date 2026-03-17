@@ -1,7 +1,10 @@
 package runtime
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -420,4 +423,31 @@ HEALTHCHECK --interval=30s --timeout=3s \
     CMD wget -q --spider http://localhost:80/ || exit 1
 CMD ["nginx", "-g", "daemon off;"]
 `
+}
+
+// parseExposeFromDockerfile reads a Dockerfile and returns the last EXPOSE port found.
+// Returns 0 if no EXPOSE directive is found.
+func parseExposeFromDockerfile(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+
+	var lastPort int
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(strings.ToUpper(line), "EXPOSE ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				// EXPOSE can have port/protocol like "80/tcp", strip the protocol
+				portStr := strings.Split(parts[1], "/")[0]
+				if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+					lastPort = p
+				}
+			}
+		}
+	}
+	return lastPort
 }

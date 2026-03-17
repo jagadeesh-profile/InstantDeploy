@@ -1,4 +1,5 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
+// Use VITE_API_URL if set, otherwise derive from current page location
+const API_BASE_URL = import.meta.env.VITE_API_URL || "";
 
 type WebSocketEventType = "deployment_status" | "deployment_log";
 
@@ -60,7 +61,9 @@ class WebSocketService {
   }
 
   private buildWebSocketURL(userID: string): string {
-    const parsed = new URL(API_BASE_URL);
+    // If API_BASE_URL is empty/relative, derive WebSocket URL from current page location
+    const base = API_BASE_URL || window.location.origin;
+    const parsed = new URL(base);
     parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
     parsed.pathname = "/ws";
     parsed.searchParams.set("user_id", userID);

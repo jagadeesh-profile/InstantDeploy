@@ -30,12 +30,3 @@ require (
 	google.golang.org/protobuf v1.34.2 // indirect
 )
 
-replace (
-	golang.org/x/crypto         => github.com/golang/crypto v0.27.0
-	golang.org/x/sync           => github.com/golang/sync v0.8.0
-	golang.org/x/sys            => github.com/golang/sys v0.25.0
-	golang.org/x/text           => github.com/golang/text v0.18.0
-	google.golang.org/protobuf  => github.com/protocolbuffers/protobuf-go v1.34.2
-	gopkg.in/yaml.v3            => github.com/go-yaml/yaml v3.0.1+incompatible
-	gopkg.in/check.v1           => github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e
-)
