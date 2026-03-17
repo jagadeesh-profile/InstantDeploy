@@ -27,26 +27,54 @@ spec:
                 name: instantdeploy-backend-config
             - secretRef:
                 name: instantdeploy-backend-secret
+          volumeMounts:
+            - name: builds
+              mountPath: /tmp/builds
           readinessProbe:
             httpGet:
               path: /api/v1/health
               port: http
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 10
-            timeoutSeconds: 2
-            failureThreshold: 3
+            timeoutSeconds: 3
+            failureThreshold: 5
           livenessProbe:
             httpGet:
               path: /api/v1/health
               port: http
-            initialDelaySeconds: 15
+            initialDelaySeconds: 20
             periodSeconds: 20
-            timeoutSeconds: 2
+            timeoutSeconds: 3
             failureThreshold: 3
           resources:
             requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 500m
+              cpu: 200m
               memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+        # Docker-in-Docker sidecar (kind nodes use containerd, not Docker)
+        - name: dind
+          image: docker:27-dind
+          securityContext:
+            privileged: true
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          volumeMounts:
+            - name: builds
+              mountPath: /tmp/builds
+            - name: dind-storage
+              mountPath: /var/lib/docker
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: builds
+          emptyDir: {}
+        - name: dind-storage
+          emptyDir: {}

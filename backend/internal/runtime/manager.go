@@ -532,7 +532,19 @@ func (m *Manager) ensureDockerfile(repoDir, deploymentID string) (dockerfilePath
 
 	// 3. Generate Dockerfile
 	generator := NewDockerfileGenerator(logf)
-	return generator.Generate(repoDir, project)
+	dfPath, dfPort, dfErr := generator.Generate(repoDir, project)
+	if dfErr != nil {
+		return dfPath, dfPort, dfErr
+	}
+	// For custom Dockerfiles, detect container port from EXPOSE directive
+	if project.Type == "custom" && dfPort == 0 {
+		dfPort = parseExposeFromDockerfile(dfPath)
+		logf("info", fmt.Sprintf("Detected container port %d from Dockerfile EXPOSE", dfPort))
+	}
+	if dfPort == 0 {
+		dfPort = 8080
+	}
+	return dfPath, dfPort, dfErr
 }
 
 func (m *Manager) enqueueBuild(req buildRequest) bool {
@@ -813,10 +825,26 @@ func dockerBuildArgs(image, dockerfilePath string) []string {
 }
 
 func checkDockerDaemonAvailable() error {
-	// First check if the socket file exists at all
+	dockerHost := os.Getenv("DOCKER_HOST")
+
+	// For TCP connections (e.g. Docker-in-Docker sidecar), skip socket file checks
+	if strings.HasPrefix(dockerHost, "tcp://") {
+		// Just ping the daemon directly
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := runCmd(ctx, "docker", "info"); err != nil {
+			if isDockerDaemonUnavailableError(err) {
+				return errors.New("cannot connect to the Docker daemon; ensure Docker Desktop/daemon is running and reachable")
+			}
+			return err
+		}
+		return nil
+	}
+
+	// For Unix socket connections, check the socket file exists
 	socketPath := "/var/run/docker.sock"
-	if envSocket := os.Getenv("DOCKER_HOST"); envSocket != "" {
-		socketPath = strings.TrimPrefix(envSocket, "unix://")
+	if dockerHost != "" {
+		socketPath = strings.TrimPrefix(dockerHost, "unix://")
 	}
 	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
 		return fmt.Errorf(
