@@ -4,6 +4,7 @@ import { Rocket } from "lucide-react";
 import toast from "react-hot-toast";
 import {
   forgotPassword,
+  getApiErrorMessage,
   login,
   resetPassword,
   setToken,
@@ -87,9 +88,7 @@ export default function LoginPage() {
       toast.success(`Welcome back, ${user.username}!`);
       navigate("/");
     } catch (err: unknown) {
-      const axiosErr = err as { response?: { data?: { error?: string } } };
-      const msg = axiosErr?.response?.data?.error ?? "Request failed";
-      toast.error(msg);
+      toast.error(getApiErrorMessage(err));
     } finally {
       setLoading(false);
     }

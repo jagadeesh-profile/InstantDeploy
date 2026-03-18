@@ -1,4 +1,7 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? window.location.origin;
+const configuredApiBase = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
+const API_BASE_URL = configuredApiBase && configuredApiBase.length > 0
+  ? configuredApiBase
+  : window.location.origin;
 const WS_PATH = (import.meta.env.VITE_WS_PATH as string | undefined) ?? "/ws";
 
 type WebSocketEventType = "deployment_status" | "deployment_log";
