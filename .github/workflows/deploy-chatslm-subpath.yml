@@ -57,6 +57,10 @@ jobs:
           cp -r frontend/dist/. deploy-package/
           cp frontend/dist/index.html deploy-package/404.html
 
+          # Ensure direct deep-link entry to /instantdeploy/login works on GitHub Pages.
+          mkdir -p deploy-package/login
+          cp frontend/dist/index.html deploy-package/login/index.html
+
       - name: Deploy to same repository gh-pages
         if: ${{ vars.CHATSLM_PAGES_REPO == '' }}
         uses: peaceiris/actions-gh-pages@v3
