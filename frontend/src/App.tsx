@@ -9,13 +9,14 @@ import Layout from "./components/Layout";
 
 export default function App() {
   const { token, isAuthenticated } = useAuthStore();
+  const routerBase = (import.meta.env.VITE_APP_BASE_PATH as string | undefined) ?? "/";
 
   useEffect(() => {
     setToken(token ?? "");
   }, [token]);
 
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={routerBase}>
       <Toaster position="top-right" />
       <Routes>
         <Route path="/login" element={<LoginPage />} />

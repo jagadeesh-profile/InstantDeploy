@@ -1,0 +1,79 @@
+name: Deploy InstantDeploy To Chatslm Subpath
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_deploy:
+        description: Deploy to GitHub Pages branch
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches: ["main"]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-chatslm-subpath.yml"
+
+permissions:
+  contents: write
+
+env:
+  APP_SUBPATH: instantdeploy
+  API_PATH_PREFIX: /instantdeploy-api/v1
+  WS_PATH: /instantdeploy-ws
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || inputs.run_deploy }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "frontend/package-lock.json"
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build subpath frontend
+        working-directory: frontend
+        env:
+          VITE_APP_BASE_PATH: /${{ env.APP_SUBPATH }}/
+          VITE_API_URL: https://chatslm.com
+          VITE_API_PATH_PREFIX: ${{ env.API_PATH_PREFIX }}
+          VITE_WS_PATH: ${{ env.WS_PATH }}
+        run: npm run build
+
+      - name: Prepare deploy directory
+        run: |
+          mkdir -p deploy-package
+          cp -r frontend/dist/. deploy-package/
+          cp frontend/dist/index.html deploy-package/404.html
+
+      - name: Deploy to same repository gh-pages
+        if: ${{ vars.CHATSLM_PAGES_REPO == '' }}
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./deploy-package
+          destination_dir: ${{ env.APP_SUBPATH }}
+          keep_files: true
+
+      - name: Deploy to external repository gh-pages
+        if: ${{ vars.CHATSLM_PAGES_REPO != '' }}
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          personal_token: ${{ secrets.PAGES_DEPLOY_TOKEN }}
+          external_repository: ${{ vars.CHATSLM_PAGES_REPO }}
+          publish_branch: gh-pages
+          publish_dir: ./deploy-package
+          destination_dir: ${{ env.APP_SUBPATH }}
+          keep_files: true

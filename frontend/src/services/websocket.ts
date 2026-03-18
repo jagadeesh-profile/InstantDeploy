@@ -1,5 +1,5 @@
-// Use VITE_API_URL if set, otherwise derive from current page location
-const API_BASE_URL = import.meta.env.VITE_API_URL || "";
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? window.location.origin;
+const WS_PATH = (import.meta.env.VITE_WS_PATH as string | undefined) ?? "/ws";
 
 type WebSocketEventType = "deployment_status" | "deployment_log";
 
@@ -18,13 +18,15 @@ class WebSocketService {
   private readonly reconnectDelayMs = 3000;
   private readonly listeners = new Map<WebSocketEventType, Set<Listener>>();
   private currentUserID = "";
+  private currentToken = "";
 
-  connect(userID: string) {
-    if (!userID) return;
+  connect(userID: string, token: string) {
+    if (!userID || !token) return;
     this.currentUserID = userID;
+    this.currentToken = token;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
 
-    const wsURL = this.buildWebSocketURL(userID);
+    const wsURL = this.buildWebSocketURL(userID, token);
     this.ws = new WebSocket(wsURL);
 
     this.ws.onopen = () => { this.reconnectAttempts = 0; };
@@ -42,6 +44,7 @@ class WebSocketService {
     if (this.ws) { this.ws.close(); this.ws = null; }
     this.reconnectAttempts = 0;
     this.currentUserID = "";
+    this.currentToken = "";
   }
 
   on(eventType: WebSocketEventType, listener: Listener): () => void {
@@ -55,18 +58,17 @@ class WebSocketService {
   }
 
   private attemptReconnect() {
-    if (!this.currentUserID || this.reconnectAttempts >= this.maxReconnectAttempts) return;
+    if (!this.currentUserID || !this.currentToken || this.reconnectAttempts >= this.maxReconnectAttempts) return;
     this.reconnectAttempts++;
-    window.setTimeout(() => this.connect(this.currentUserID), this.reconnectDelayMs);
+    window.setTimeout(() => this.connect(this.currentUserID, this.currentToken), this.reconnectDelayMs);
   }
 
-  private buildWebSocketURL(userID: string): string {
-    // If API_BASE_URL is empty/relative, derive WebSocket URL from current page location
-    const base = API_BASE_URL || window.location.origin;
-    const parsed = new URL(base);
+  private buildWebSocketURL(userID: string, token: string): string {
+    const parsed = new URL(API_BASE_URL);
     parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
-    parsed.pathname = "/ws";
+    parsed.pathname = WS_PATH.startsWith("/") ? WS_PATH : `/${WS_PATH}`;
     parsed.searchParams.set("user_id", userID);
+    parsed.searchParams.set("token", token);
     return parsed.toString();
   }
 }
