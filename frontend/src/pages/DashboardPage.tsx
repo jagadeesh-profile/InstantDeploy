@@ -23,7 +23,7 @@ export default function DashboardPage() {
   const [logs, setLogs]                     = useState<DeploymentLog[]>([]);
   const [logsLoading, setLogsLoading]       = useState(false);
   const logsSeq                             = useRef(0);
-  const logsEndRef                          = useRef<HTMLDivElement>(null);
+  const logsContainerRef                    = useRef<HTMLDivElement>(null);
 
   // ---- initial load ----
   useEffect(() => { void refresh(); }, [refresh]);
@@ -59,7 +59,9 @@ export default function DashboardPage() {
 
   // ---- auto-scroll logs ----
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (logsContainerRef.current) {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+    }
   }, [logs]);
 
   // ---- WebSocket realtime updates ----
@@ -249,7 +251,7 @@ export default function DashboardPage() {
         ) : logs.length === 0 ? (
           <p className="text-sm text-slate-500">No logs yet.</p>
         ) : (
-          <div className="bg-slate-950 rounded-xl p-4 max-h-72 overflow-y-auto font-mono text-xs space-y-0.5 border border-slate-800" aria-live="polite">
+          <div ref={logsContainerRef} className="bg-slate-950 rounded-xl p-4 max-h-72 overflow-y-auto font-mono text-xs space-y-0.5 border border-slate-800 scroll-smooth" aria-live="polite">
             {logs.map((l, idx) => (
               <div key={`${l.time}-${idx}`} className="flex gap-2 leading-5">
                 <span className="text-gray-500 shrink-0">
@@ -261,7 +263,6 @@ export default function DashboardPage() {
                 <span className="text-gray-200 break-all">{l.message}</span>
               </div>
             ))}
-            <div ref={logsEndRef} />
           </div>
         )}
       </div>

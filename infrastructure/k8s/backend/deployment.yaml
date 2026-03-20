@@ -15,7 +15,9 @@ spec:
       labels:
         app: instantdeploy-backend
     spec:
+      serviceAccountName: instantdeploy-backend
       containers:
+        # Main backend application
         - name: backend
           image: instantdeploy-backend:local
           imagePullPolicy: IfNotPresent
@@ -27,9 +29,9 @@ spec:
                 name: instantdeploy-backend-config
             - secretRef:
                 name: instantdeploy-backend-secret
-          volumeMounts:
-            - name: builds
-              mountPath: /tmp/builds
+          env:
+            - name: DOCKER_HOST
+              value: "tcp://localhost:2375"
           readinessProbe:
             httpGet:
               path: /api/v1/health
@@ -42,18 +44,22 @@ spec:
             httpGet:
               path: /api/v1/health
               port: http
-            initialDelaySeconds: 20
+            initialDelaySeconds: 30
             periodSeconds: 20
             timeoutSeconds: 3
-            failureThreshold: 3
+            failureThreshold: 5
+          volumeMounts:
+            - name: build-workspace
+              mountPath: /tmp/builds
           resources:
             requests:
-              cpu: 200m
-              memory: 256Mi
+              cpu: 100m
+              memory: 128Mi
             limits:
               cpu: "1"
               memory: 512Mi
-        # Docker-in-Docker sidecar (kind nodes use containerd, not Docker)
+
+        # Docker-in-Docker sidecar for building images
         - name: dind
           image: docker:27-dind
           securityContext:
@@ -61,20 +67,24 @@ spec:
           env:
             - name: DOCKER_TLS_CERTDIR
               value: ""
+          ports:
+            - containerPort: 2375
+              name: docker
           volumeMounts:
-            - name: builds
+            - name: build-workspace
               mountPath: /tmp/builds
             - name: dind-storage
               mountPath: /var/lib/docker
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: 100m
+              memory: 256Mi
             limits:
               cpu: "2"
               memory: 2Gi
+
       volumes:
-        - name: builds
+        - name: build-workspace
           emptyDir: {}
         - name: dind-storage
           emptyDir: {}

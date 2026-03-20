@@ -1,0 +1,220 @@
+name: Build & Test Backend
+
+on:
+  push:
+    branches: ['main', 'develop', 'staging']
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-*.yml'
+  pull_request:
+    branches: ['main', 'develop', 'staging']
+    paths:
+      - 'backend/**'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/instantdeploy-backend
+
+jobs:
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          cache: true
+          cache-dependency-path: 'backend/go.sum'
+      
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          working-directory: backend
+          args: --timeout 5m
+      
+      - name: Check code formatting
+        run: |
+          cd backend
+          go fmt ./...
+          if [[ ! -z $(git diff) ]]; then
+            echo "Code is not formatted. Run 'go fmt ./...'"
+            git diff
+            exit 1
+          fi
+
+  test:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: instantdeploy_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          cache: true
+          cache-dependency-path: 'backend/go.sum'
+      
+      - name: Run tests with coverage
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/instantdeploy_test?sslmode=disable
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          cd backend
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./backend/coverage.out
+          flags: unittests
+          name: codecov-umbrella
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      - name: Run Gosec Security Scanner
+        uses: securego/gosec@master
+        with:
+          args: '-no-fail -fmt json -out gosec-report.json ./...'
+          working_directory: backend
+      
+      - name: Check for vulnerabilities
+        run: |
+          cd backend
+          go list -json -m all | nancy sleuth
+      
+      - name: Upload security report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-report
+          path: backend/gosec-report.json
+
+  build:
+    name: Build Docker Image
+    needs: [lint, test, security]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ github.sha }}
+            BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+  scan-image:
+    name: Scan Docker Image for Vulnerabilities
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  notify:
+    name: Send Notifications
+    needs: [lint, test, build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Determine status
+        id: status
+        run: |
+          if [ "${{ needs.lint.result }}" == "failure" ] || [ "${{ needs.test.result }}" == "failure" ] || [ "${{ needs.build.result }}" == "failure" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Send Slack notification
+        if: ${{ steps.status.outputs.status == 'failed' }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'Backend build ${{ steps.status.outputs.status }}'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          fields: repo,message,commit,author

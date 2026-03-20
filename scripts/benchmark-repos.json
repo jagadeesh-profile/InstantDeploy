@@ -1,0 +1,8 @@
+[
+  { "name": "node-ms", "repository": "vercel/ms", "branch": "master" },
+  { "name": "python-httpbin", "repository": "kennethreitz/httpbin", "branch": "master" },
+  { "name": "go-http-echo", "repository": "hashicorp/http-echo", "branch": "main" },
+  { "name": "java-spring-boot-guide", "repository": "spring-guides/gs-spring-boot", "branch": "main" },
+  { "name": "rust-actix-examples", "repository": "actix/examples", "branch": "master" },
+  { "name": "static-getting-started", "repository": "docker/getting-started", "branch": "main" }
+]

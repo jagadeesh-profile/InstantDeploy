@@ -22,6 +22,7 @@ type ProjectConfig struct {
 	Port           int               `json:"port"`
 	BuildCommand   string            `json:"build_command"`
 	StartCommand   string            `json:"start_command"`
+	OutputDir      string            `json:"output_dir"` // Directory containing index.html (relative to repo root)
 	EnvVars        map[string]string `json:"env_vars"`
 	SkipPlugins    []string          `json:"skip_plugins"`
 	FixRequired    bool              `json:"fix_required"`
@@ -52,11 +53,36 @@ func (d *SmartDetector) Detect(repoDir string) (*ProjectConfig, error) {
 
 	// Priority: custom Dockerfile > Java > Node > Python > Go > Rust > PHP > Ruby > .NET > static
 	if h.hasFile("Dockerfile") {
+		// If the project also has package.json, check if the Dockerfile is a
+		// simple nginx/static copy (not a proper multi-stage build). If so,
+		// skip the custom Dockerfile and use our smart Node detection instead.
+		if h.hasFile("package.json") {
+			if content, err := h.readFile("Dockerfile"); err == nil {
+				// If Dockerfile does NOT have a multi-stage build (no "AS build")
+				// or doesn't run npm/yarn/pnpm, it's probably just serving files
+				hasMultiStage := strings.Contains(strings.ToUpper(content), " AS ")
+				hasBuildStep := strings.Contains(content, "npm ") ||
+					strings.Contains(content, "yarn ") ||
+					strings.Contains(content, "pnpm ") ||
+					strings.Contains(content, "bun ")
+				if !hasMultiStage && !hasBuildStep {
+					// Skip this Dockerfile — fall through to Node detection below
+					goto detectLanguage
+				}
+			}
+		}
+
 		cfg.Type = "custom"
 		cfg.Language = "docker"
 		cfg.Summary = "custom Dockerfile"
+		// Parse the actual EXPOSE port from the user's Dockerfile
+		if content, err := h.readFile("Dockerfile"); err == nil {
+			cfg.Port = extractExposePort(content, 8080)
+		}
 		return cfg, nil
 	}
+
+detectLanguage:
 	if ok, err := h.detectJava(cfg); ok {
 		cfg.Summary = fmt.Sprintf("%s (%s)", cfg.Type, cfg.Framework)
 		return cfg, err
@@ -93,7 +119,9 @@ func (d *SmartDetector) Detect(repoDir string) (*ProjectConfig, error) {
 	// Default to static site
 	cfg.Type = "static"
 	cfg.Language = "html"
-	cfg.Port = 80
+	cfg.Port = 8080
+	// Find where index.html actually lives
+	cfg.OutputDir = h.findIndexHTMLDir()
 	cfg.Summary = "static HTML"
 	return cfg, nil
 }
@@ -115,6 +143,42 @@ func (h *detectorHelper) readFile(name string) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// findIndexHTMLDir searches for index.html in the repo and returns the
+// relative directory path where it's found (e.g. "public", "src", ".").
+// Returns "" if not found.
+func (h *detectorHelper) findIndexHTMLDir() string {
+	// Check root first
+	if h.hasFile("index.html") {
+		return "."
+	}
+
+	// Check common subdirectories
+	commonDirs := []string{"public", "src", "html", "www", "static", "dist", "build", "app", "web"}
+	for _, dir := range commonDirs {
+		indexPath := filepath.Join(dir, "index.html")
+		if h.hasFile(indexPath) {
+			return dir
+		}
+	}
+
+	// Walk up to 3 levels deep to find it
+	var found string
+	_ = filepath.Walk(h.repoDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		if info.Name() == "index.html" {
+			rel, relErr := filepath.Rel(h.repoDir, filepath.Dir(path))
+			if relErr == nil && !strings.Contains(rel, "node_modules") {
+				found = filepath.ToSlash(rel)
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return found
 }
 
 // ==================== JAVA ====================
@@ -359,40 +423,99 @@ func (h *detectorHelper) detectNode(cfg *ProjectConfig) (bool, error) {
 		cfg.Version["node"] = "20"
 	}
 
+	// Detect npm workspaces
+	if workspaces, ok := pkg["workspaces"]; ok {
+		cfg.CustomSettings["hasWorkspaces"] = true
+		if ws, ok := workspaces.([]any); ok {
+			wsNames := make([]string, 0, len(ws))
+			for _, w := range ws {
+				if s, ok := w.(string); ok {
+					wsNames = append(wsNames, s)
+				}
+			}
+			cfg.CustomSettings["workspaces"] = wsNames
+		}
+	}
+
 	deps := extractDeps(pkg, "dependencies")
 	devDeps := extractDeps(pkg, "devDependencies")
 
+	// Extract scripts FIRST — this drives detection decisions
+	scripts := extractDeps(pkg, "scripts")
+	startScript, _ := scripts["start"].(string)
+	devScript, _ := scripts["dev"].(string)
+	buildScript, _ := scripts["build"].(string)
+
+	cfg.BuildCommand = buildScript
+	cfg.StartCommand = startScript
+	if cfg.StartCommand == "" {
+		cfg.StartCommand = devScript
+	}
+
+	// ---- DETECT PROJECT TYPE USING SCRIPTS (priority order) ----
+
 	switch {
+	// 1. Next.js — check deps (has its own server runtime)
 	case deps["next"] != nil:
 		cfg.Framework, cfg.Type, cfg.Port = "nextjs", "node-nextjs", 3000
+
+	// 2. Nuxt — check deps (has its own server runtime)
 	case deps["nuxt"] != nil:
 		cfg.Framework, cfg.Type, cfg.Port = "nuxt", "node-nuxt", 3000
+
+	// 3. CRA — ONLY if scripts.start actually invokes react-scripts
+	case strings.Contains(startScript, "react-scripts"):
+		cfg.Framework, cfg.Type, cfg.Port = "cra", "node-cra", 8080
+
+	// 4. Vite — check scripts for vite in dev/build/start
+	case strings.Contains(devScript, "vite") || strings.Contains(buildScript, "vite") || strings.Contains(startScript, "vite"):
+		cfg.Framework, cfg.Type, cfg.Port = "vite", "node-vite", 8080
+
+	// 5. Vite (dependency-only fallback: vite in devDeps but not in scripts)
 	case devDeps["vite"] != nil:
-		cfg.Framework, cfg.Type, cfg.Port = "vite", "node-vite", 5173
-	case deps["react-scripts"] != nil:
-		cfg.Framework, cfg.Type, cfg.Port = "cra", "node-cra", 3000
+		cfg.Framework, cfg.Type, cfg.Port = "vite", "node-vite", 8080
+
+	// 6. Backend frameworks (keep node runtime, NOT static build)
 	case deps["express"] != nil:
 		cfg.Framework, cfg.Type, cfg.Port = "express", "node-express", 3000
 	case deps["@nestjs/core"] != nil:
 		cfg.Framework, cfg.Type, cfg.Port = "nestjs", "node-nestjs", 3000
 	case deps["fastify"] != nil:
-		cfg.Framework, cfg.Port = "fastify", 3000
-	case deps["react"] != nil:
-		cfg.Framework, cfg.Port = "react", 3000
-	case deps["vue"] != nil:
-		cfg.Framework, cfg.Port = "vue", 8080
+		cfg.Framework, cfg.Type, cfg.Port = "fastify", "node", 3000
+	case deps["koa"] != nil:
+		cfg.Framework, cfg.Type, cfg.Port = "koa", "node", 3000
+	case deps["hapi"] != nil || deps["@hapi/hapi"] != nil:
+		cfg.Framework, cfg.Type, cfg.Port = "hapi", "node", 3000
+
+	// 7. React/Vue with build script → static build (build + nginx)
+	case (deps["react"] != nil || devDeps["react"] != nil) && buildScript != "":
+		cfg.Framework, cfg.Type, cfg.Port = "react", "node-static", 8080
+
+	case (deps["vue"] != nil || devDeps["vue"] != nil) && buildScript != "":
+		cfg.Framework, cfg.Type, cfg.Port = "vue", "node-static", 8080
+
+	// 8. Has build script but no server → static build with nginx
+	case buildScript != "":
+		cfg.Framework, cfg.Type, cfg.Port = "static-build", "node-static", 8080
+
+	// 9. Has start script → generic Node app
+	case startScript != "":
+		cfg.Framework, cfg.Type, cfg.Port = "node-app", "node", 3000
+
+	// 10. Fallback — no start AND no build script. Check for index.html → static
+	default:
+		// If there's an index.html, serve as static site
+		outDir := h.findIndexHTMLDir()
+		if outDir != "" {
+			cfg.Type = "static"
+			cfg.Port = 8080
+			cfg.OutputDir = outDir
+		} else {
+			// Last resort: try to build + nginx anyway
+			cfg.Framework, cfg.Type, cfg.Port = "static-build", "node-static", 8080
+		}
 	}
 
-	if scripts, ok := pkg["scripts"].(map[string]any); ok {
-		if v, ok := scripts["build"].(string); ok {
-			cfg.BuildCommand = v
-		}
-		if v, ok := scripts["start"].(string); ok {
-			cfg.StartCommand = v
-		} else if v, ok := scripts["dev"].(string); ok {
-			cfg.StartCommand = v
-		}
-	}
 	return true, nil
 }
 
@@ -409,8 +532,9 @@ func (h *detectorHelper) detectPython(cfg *ProjectConfig) (bool, error) {
 	hasPipfile := h.hasFile("Pipfile")
 	hasReq := h.hasFile("requirements.txt")
 	hasPyproject := h.hasFile("pyproject.toml")
+	hasPyFiles := h.hasPythonFiles()
 
-	if !hasPipfile && !hasReq && !hasPyproject {
+	if !hasPipfile && !hasReq && !hasPyproject && !hasPyFiles {
 		return false, nil
 	}
 
@@ -448,7 +572,88 @@ func (h *detectorHelper) detectPython(cfg *ProjectConfig) (bool, error) {
 	} else if hasPipfile {
 		cfg.BuildFile = "Pipfile"
 	}
+
+	// Detect Python entrypoint file
+	if cfg.StartCommand == "" {
+		for _, entry := range []string{"app.py", "main.py", "server.py", "run.py", "wsgi.py", "asgi.py", "streamlit_app.py"} {
+			if h.hasFile(entry) {
+				if cfg.Framework == "streamlit" {
+					cfg.StartCommand = "streamlit run " + entry + fmt.Sprintf(" --server.port=%d --server.address=0.0.0.0", cfg.Port)
+				} else {
+					cfg.StartCommand = "python " + entry
+				}
+				break
+			}
+		}
+		if cfg.StartCommand == "" {
+			if entry := h.findFirstPythonEntrypoint(); entry != "" {
+				if cfg.Framework == "streamlit" {
+					cfg.StartCommand = "streamlit run " + entry + fmt.Sprintf(" --server.port=%d --server.address=0.0.0.0", cfg.Port)
+				} else {
+					cfg.StartCommand = "python " + entry
+				}
+			}
+		}
+	}
+
 	return true, nil
+}
+
+func (h *detectorHelper) hasPythonFiles() bool {
+	found := false
+	_ = filepath.Walk(h.repoDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.IsDir() {
+			dir := info.Name()
+			if dir == ".git" || dir == "node_modules" || dir == ".venv" || dir == "venv" || dir == "__pycache__" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(info.Name()), ".py") {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+func (h *detectorHelper) findFirstPythonEntrypoint() string {
+	candidates := []string{}
+	_ = filepath.Walk(h.repoDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.IsDir() {
+			dir := info.Name()
+			if dir == ".git" || dir == "node_modules" || dir == ".venv" || dir == "venv" || dir == "__pycache__" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(info.Name()), ".py") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(h.repoDir, path)
+		if relErr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		base := strings.ToLower(filepath.Base(rel))
+		if base == "main.py" || base == "app.py" || base == "server.py" || base == "run.py" {
+			candidates = append([]string{rel}, candidates...)
+		} else {
+			candidates = append(candidates, rel)
+		}
+		return nil
+	})
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
 }
 
 func extractPythonVersion(content string) string {
@@ -623,4 +828,23 @@ func getOrDefault(m map[string]string, key, def string) string {
 		return v
 	}
 	return def
+}
+
+// extractExposePort scans Dockerfile content for the last EXPOSE directive and
+// returns its port number. The last EXPOSE is used because multi-stage builds
+// may have intermediate EXPOSE lines, and the final stage is what matters.
+// Returns fallback if no valid EXPOSE is found.
+func extractExposePort(dockerfileContent string, fallback int) int {
+	re := regexp.MustCompile(`(?im)^\s*EXPOSE\s+(\d+)`)
+	matches := re.FindAllStringSubmatch(dockerfileContent, -1)
+	if len(matches) == 0 {
+		return fallback
+	}
+	// Use the last EXPOSE directive (final stage in multi-stage builds)
+	lastMatch := matches[len(matches)-1]
+	var port int
+	if _, err := fmt.Sscanf(lastMatch[1], "%d", &port); err == nil && port > 0 && port <= 65535 {
+		return port
+	}
+	return fallback
 }

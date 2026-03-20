@@ -1,8 +1,6 @@
 package runtime
 
 import (
-	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -189,161 +187,35 @@ func (f *BuildFixer) fixMaven(repoDir string) error {
 // ==================== NODE ====================
 
 func (f *BuildFixer) fixNode(repoDir string) error {
-	pkgPath := filepath.Join(repoDir, "package.json")
-	content, err := os.ReadFile(pkgPath)
-	if err != nil {
-		return err
-	}
-
-	var pkg map[string]any
-	if err := json.Unmarshal(content, &pkg); err != nil {
-		return err
-	}
-
-	modified := false
-
-	if engines, ok := pkg["engines"].(map[string]any); ok {
-		if node, ok := engines["node"].(string); ok {
-			if strings.Contains(node, "^") || strings.Contains(node, "~") {
-				engines["node"] = ">=" + strings.TrimLeft(node, "^~")
-				modified = true
-			}
-		}
-	}
-
-	if scripts, ok := pkg["scripts"].(map[string]any); ok {
-		for _, s := range []string{"preinstall", "postinstall"} {
-			if _, exists := scripts[s]; exists {
-				delete(scripts, s)
-				modified = true
-			}
-		}
-	}
-
-	if !modified {
-		return nil
-	}
-
-	fixed, err := json.MarshalIndent(pkg, "", "  ")
-	if err != nil {
-		return err
-	}
-	_ = os.WriteFile(pkgPath+".backup", content, 0644)
-	if err := os.WriteFile(pkgPath, fixed, 0644); err != nil {
-		return err
-	}
-	f.logf("info", "Fixed package.json — relaxed engine constraints")
+	// Avoid mutating package.json automatically. Script and engine rewrites can
+	// break legitimate build flows and are a common source of false failures.
+	_ = repoDir
+	f.logf("info", "Skipped package.json mutation for safer build compatibility")
 	return nil
 }
 
 // ==================== PYTHON ====================
 
 func (f *BuildFixer) fixPython(repoDir string) error {
-	reqPath := filepath.Join(repoDir, "requirements.txt")
-	if _, err := os.Stat(reqPath); os.IsNotExist(err) {
-		return nil
-	}
-
-	content, err := os.ReadFile(reqPath)
-	if err != nil {
-		return err
-	}
-
-	lines := strings.Split(string(content), "\n")
-	fixed := make([]string, 0, len(lines))
-	modified := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
-			fixed = append(fixed, line)
-			continue
-		}
-		if strings.Contains(trimmed, "==") {
-			parts := strings.SplitN(trimmed, "==", 2)
-			fixed = append(fixed, parts[0]+">="+parts[1])
-			modified = true
-		} else {
-			fixed = append(fixed, line)
-		}
-	}
-
-	if !modified {
-		return nil
-	}
-
-	_ = os.WriteFile(reqPath+".backup", content, 0644)
-	if err := os.WriteFile(reqPath, []byte(strings.Join(fixed, "\n")), 0644); err != nil {
-		return err
-	}
-	f.logf("info", "Fixed requirements.txt — relaxed pinned versions")
+	// Do not rewrite dependency pins automatically. Many repos depend on exact
+	// versions for compatibility and relaxing versions increases build failures.
+	_ = repoDir
+	f.logf("info", "Skipped dependency rewrite for Python compatibility")
 	return nil
 }
 
 // ==================== PHP ====================
 
 func (f *BuildFixer) fixPHP(repoDir string) error {
-	composerPath := filepath.Join(repoDir, "composer.json")
-	if _, err := os.Stat(composerPath); os.IsNotExist(err) {
-		return nil
-	}
-
-	content, err := os.ReadFile(composerPath)
-	if err != nil {
-		return err
-	}
-
-	var composer map[string]any
-	if err := json.Unmarshal(content, &composer); err != nil {
-		return err
-	}
-
-	modified := false
-	if require, ok := composer["require"].(map[string]any); ok {
-		if php, ok := require["php"].(string); ok {
-			if strings.Contains(php, "^") {
-				require["php"] = ">=" + strings.TrimPrefix(php, "^")
-				modified = true
-			}
-		}
-	}
-
-	if !modified {
-		return nil
-	}
-
-	fixed, err := json.MarshalIndent(composer, "", "  ")
-	if err != nil {
-		return err
-	}
-	_ = os.WriteFile(composerPath+".backup", content, 0644)
-	return os.WriteFile(composerPath, fixed, 0644)
+	_ = repoDir
+	f.logf("info", "Skipped composer.json mutation for safer PHP compatibility")
+	return nil
 }
 
 // ==================== RUBY ====================
 
 func (f *BuildFixer) fixRuby(repoDir string) error {
-	gemfilePath := filepath.Join(repoDir, "Gemfile")
-	if _, err := os.Stat(gemfilePath); os.IsNotExist(err) {
-		return nil
-	}
-
-	content, err := os.ReadFile(gemfilePath)
-	if err != nil {
-		return err
-	}
-
-	original := string(content)
-	re := regexp.MustCompile(`ruby ['"]~>([^'"]+)['"]`)
-	fixed := re.ReplaceAllString(original, "ruby '>=$1'")
-
-	if fixed == original {
-		return nil
-	}
-	_ = os.WriteFile(gemfilePath+".backup", content, 0644)
-	if err := os.WriteFile(gemfilePath, []byte(fixed), 0644); err != nil {
-		return err
-	}
-	f.logf("info", fmt.Sprintf("Fixed Gemfile — relaxed Ruby version constraint"))
+	_ = repoDir
+	f.logf("info", "Skipped Gemfile mutation for safer Ruby compatibility")
 	return nil
 }

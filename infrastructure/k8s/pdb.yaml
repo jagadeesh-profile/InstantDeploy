@@ -1,0 +1,21 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: instantdeploy-backend-pdb
+  namespace: instantdeploy
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: instantdeploy-backend
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: instantdeploy-frontend-pdb
+  namespace: instantdeploy
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: instantdeploy-frontend

@@ -1,0 +1,69 @@
+# Multi-stage optimized production Dockerfile for frontend
+
+# Stage 1: Build
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies with npm ci for reproducible builds
+RUN npm ci --only=production && \
+    npm ci && \
+    npm cache clean --force
+
+# Build args for environment configuration
+ARG VITE_API_URL=https://api.instantdeploy.example.com
+ARG VITE_WS_URL=wss://api.instantdeploy.example.com
+ARG VITE_ENV=production
+
+ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_WS_URL=${VITE_WS_URL}
+ENV VITE_ENV=${VITE_ENV}
+
+# Copy source code
+COPY src ./src
+COPY public ./public
+COPY *.config.* ./
+COPY tsconfig.json ./
+
+# Build with optimizations
+RUN npm run build
+
+# Stage 2: Runtime
+FROM nginx:1.27-alpine
+
+# Install tini for proper signal handling
+RUN apk add --no-cache tini curl
+
+# Copy production nginx config
+COPY frontend/nginx.prod.conf /etc/nginx/nginx.conf
+
+# Create nginx cache directory
+RUN mkdir -p /var/cache/nginx && \
+    chown -R nginx:nginx /var/cache/nginx /var/log/nginx
+
+# Copy built assets from builder stage
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Create 404 and 50x error pages
+RUN mkdir -p /usr/share/nginx/html && \
+    echo '<!DOCTYPE html><html><body><h1>404 - Not Found</h1><p>The page you requested was not found.</p></body></html>' > /usr/share/nginx/html/404.html && \
+    echo '<!DOCTYPE html><html><body><h1>500 - Server Error</h1><p>An internal server error occurred.</p></body></html>' > /usr/share/nginx/html/50x.html
+
+# Set permissions
+RUN chown -R nginx:nginx /usr/share/nginx/html
+
+# Expose ports
+EXPOSE 80 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost/health || exit 1
+
+# Use tini to handle signals properly
+ENTRYPOINT ["/sbin/tini", "--"]
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]

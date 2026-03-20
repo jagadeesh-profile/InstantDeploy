@@ -1,0 +1,139 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: ['develop', 'staging']
+  workflow_dispatch:
+    inputs:
+      backend_version:
+        description: 'Backend image tag'
+        required: false
+        type: string
+      frontend_version:
+        description: 'Frontend image tag'
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ${{ github.repository }}/instantdeploy-backend
+  FRONTEND_IMAGE: ${{ github.repository }}/instantdeploy-frontend
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Determine image tags
+        id: tags
+        run: |
+          if [ -n "${{ github.event.inputs.backend_version }}" ]; then
+            BACKEND_TAG=${{ github.event.inputs.backend_version }}
+          else
+            BACKEND_TAG=${{ github.sha }}
+          fi
+          
+          if [ -n "${{ github.event.inputs.frontend_version }}" ]; then
+            FRONTEND_TAG=${{ github.event.inputs.frontend_version }}
+          else
+            FRONTEND_TAG=${{ github.sha }}
+          fi
+          
+          echo "backend_tag=${BACKEND_TAG}" >> $GITHUB_OUTPUT
+          echo "frontend_tag=${FRONTEND_TAG}" >> $GITHUB_OUTPUT
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.27.0'
+      
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+      
+      - name: Update backend deployment
+        run: |
+          kubectl set image deployment/instantdeploy-backend \
+            instantdeploy-backend=${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ steps.tags.outputs.backend_tag }} \
+            -n instantdeploy \
+            --record
+      
+      - name: Update frontend deployment
+        run: |
+          kubectl set image deployment/instantdeploy-frontend \
+            instantdeploy-frontend=${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ steps.tags.outputs.frontend_tag }} \
+            -n instantdeploy \
+            --record
+      
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/instantdeploy-backend -n instantdeploy --timeout=5m
+          kubectl rollout status deployment/instantdeploy-frontend -n instantdeploy --timeout=5m
+      
+      - name: Run smoke tests
+        run: |
+          HEALTH_CHECK_RETRIES=30
+          HEALTH_CHECK_INTERVAL=10
+          
+          for i in $(seq 1 $HEALTH_CHECK_RETRIES); do
+            echo "Health check attempt $i/$HEALTH_CHECK_RETRIES..."
+            
+            BACKEND_HEALTH=$(kubectl exec -it svc/instantdeploy-backend -n instantdeploy -- curl -s http://localhost:8080/api/v1/health | jq .status)
+            
+            if [ "$BACKEND_HEALTH" == '"ok"' ]; then
+              echo "✓ Backend is healthy"
+              break
+            fi
+            
+            if [ $i -eq $HEALTH_CHECK_RETRIES ]; then
+              echo "✗ Backend health check failed"
+              exit 1
+            fi
+            
+            sleep $HEALTH_CHECK_INTERVAL
+          done
+      
+      - name: Run integration tests
+        run: |
+          cd tests
+          npm install
+          npm run test:integration || true
+      
+      - name: Send deployment notification
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            Staging Deployment
+            Backend: ${{ steps.tags.outputs.backend_tag }}
+            Frontend: ${{ steps.tags.outputs.frontend_tag }}
+            Status: ${{ job.status }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+  performance-smoke-test:
+    name: Performance Smoke Test
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up k6
+        run: |
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6-stable.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+      
+      - name: Run smoke tests
+        run: |
+          k6 run \
+            --vus 10 \
+            --duration 5m \
+            --env BASE_URL=http://staging.instantdeploy.example.com \
+            tests/performance/load-test.js

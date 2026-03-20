@@ -5,8 +5,9 @@ metadata:
   namespace: instantdeploy
 data:
   PORT: "8080"
+  ENV: "production"
   JWT_EXPIRY_MINUTES: "120"
   REDIS_ADDR: "redis:6379"
   DATABASE_URL: "postgres://postgres:postgres@postgres:5432/instantdeploy?sslmode=disable"
   DOCKER_HOST: "tcp://localhost:2375"
-  BUILD_WORKERS: "3"
+  PROMETHEUS_ENABLED: "true"

@@ -1,0 +1,72 @@
+{
+  "baseUrl": "http://localhost:8082",
+  "totalRuns": 6,
+  "successRuns": 5,
+  "failedRuns": 1,
+  "successRate": 83.33,
+  "timeoutSec": 300,
+  "pollSec": 5,
+  "generatedUtc": "2026-03-18T03:23:41.8746997Z",
+  "results": [
+    {
+      "repoName": "node-ms",
+      "repository": "vercel/ms",
+      "branch": "master",
+      "run": 1,
+      "status": "running",
+      "durationSec": 75,
+      "error": "",
+      "timestampUtc": "2026-03-18T03:21:21.0638095Z"
+    },
+    {
+      "repoName": "python-httpbin",
+      "repository": "kennethreitz/httpbin",
+      "branch": "master",
+      "run": 1,
+      "status": "running",
+      "durationSec": 10,
+      "error": "",
+      "timestampUtc": "2026-03-18T03:21:31.1264218Z"
+    },
+    {
+      "repoName": "go-http-echo",
+      "repository": "hashicorp/http-echo",
+      "branch": "main",
+      "run": 1,
+      "status": "running",
+      "durationSec": 45,
+      "error": "",
+      "timestampUtc": "2026-03-18T03:22:16.3967810Z"
+    },
+    {
+      "repoName": "java-spring-boot-guide",
+      "repository": "spring-guides/gs-spring-boot",
+      "branch": "main",
+      "run": 1,
+      "status": "running",
+      "durationSec": 15,
+      "error": "",
+      "timestampUtc": "2026-03-18T03:22:31.4874497Z"
+    },
+    {
+      "repoName": "rust-actix-examples",
+      "repository": "actix/examples",
+      "branch": "master",
+      "run": 1,
+      "status": "failed",
+      "durationSec": 25,
+      "error": "app failed to become reachable: container instantdeploy-dep-1773804151495273554 crashed (status: exited)",
+      "timestampUtc": "2026-03-18T03:22:56.6160989Z"
+    },
+    {
+      "repoName": "static-getting-started",
+      "repository": "docker/getting-started",
+      "branch": "main",
+      "run": 1,
+      "status": "running",
+      "durationSec": 45,
+      "error": "",
+      "timestampUtc": "2026-03-18T03:23:41.8607888Z"
+    }
+  ]
+}

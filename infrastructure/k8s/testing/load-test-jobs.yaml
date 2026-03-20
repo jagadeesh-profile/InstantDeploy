@@ -1,0 +1,240 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: load-test-config
+  namespace: instantdeploy
+data:
+  load-test.js: |
+    import http from 'k6/http';
+    import { check, group, sleep } from 'k6';
+
+    export const options = {
+      stages: [
+        { duration: '2m', target: 10 },
+        { duration: '5m', target: 50 },
+        { duration: '5m', target: 50 },
+        { duration: '2m', target: 0 },
+      ],
+      thresholds: {
+        'http_req_duration': ['p(95)<500', 'p(99)<1000'],
+        'http_req_failed': ['rate<0.1'],
+      },
+    };
+
+    const BASE_URL = 'http://instantdeploy-backend:8080';
+    const API_URL = `${BASE_URL}/api/v1`;
+
+    export default function () {
+      group('Health Check', () => {
+        let res = http.get(`${API_URL}/health`);
+        check(res, { 'health status 200': (r) => r.status === 200 });
+        sleep(1);
+      });
+
+      group('API Endpoints', () => {
+        let res = http.get(`${API_URL}/repositories?query=test`, {
+          headers: { 'Content-Type': 'application/json' },
+        });
+        check(res, { 'api status ok': (r) => r.status >= 200 && r.status < 400 });
+        sleep(2);
+      });
+
+      sleep(5);
+    }
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-test-job
+  namespace: instantdeploy
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: k6
+        image: loadimpact/k6:latest
+        command:
+        - k6
+        - run
+        - --vus
+        - "50"
+        - --duration
+        - "14m"
+        - --out
+        - json=/tmp/results.json
+        - /config/load-test.js
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: results
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+      - name: results-exporter
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          sleep 900
+          while [ ! -f /tmp/results.json ]; do sleep 10; done
+          echo "Test results ready"
+        volumeMounts:
+        - name: results
+          mountPath: /tmp
+      volumes:
+      - name: config
+        configMap:
+          name: load-test-config
+      - name: results
+        emptyDir: {}
+      restartPolicy: Never
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stress-test-job
+  namespace: instantdeploy
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: k6-stress
+        image: loadimpact/k6:latest
+        command:
+        - k6
+        - run
+        - --vus
+        - "100"
+        - --duration
+        - "10m"
+        - --stage
+        - "2m:100"
+        - --stage
+        - "5m:200"
+        - --stage
+        - "2m:100"
+        - --stage
+        - "1m:0"
+        - --out
+        - json=/tmp/stress-results.json
+        - /config/load-test.js
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: results
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 2Gi
+      volumes:
+      - name: config
+        configMap:
+          name: load-test-config
+      - name: results
+        emptyDir: {}
+      restartPolicy: Never
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-performance-test
+  namespace: instantdeploy
+spec:
+  schedule: "0 2 * * *"  # 2 AM UTC daily
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          containers:
+          - name: k6-nightly
+            image: loadimpact/k6:latest
+            command:
+            - k6
+            - run
+            - --vus
+            - "50"
+            - --duration
+            - "30m"
+            - --out
+            - json=/tmp/nightly-results.json
+            - /config/load-test.js
+            volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: results
+              mountPath: /tmp
+            resources:
+              requests:
+                cpu: 500m
+                memory: 512Mi
+              limits:
+                cpu: 1000m
+                memory: 1Gi
+          volumes:
+          - name: config
+            configMap:
+              name: load-test-config
+          - name: results
+            emptyDir: {}
+          restartPolicy: OnFailure
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-results-service
+  namespace: instantdeploy
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8888
+    targetPort: 8888
+  selector:
+    app: test-results
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: load-test-role
+  namespace: instantdeploy
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/logs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: load-test-rolebinding
+  namespace: instantdeploy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: load-test-role
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: instantdeploy

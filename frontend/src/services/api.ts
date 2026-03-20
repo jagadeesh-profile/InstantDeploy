@@ -1,9 +1,6 @@
 import axios from "axios";
 
-const configuredApiBase = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
-const API_BASE_URL = configuredApiBase && configuredApiBase.length > 0
-  ? configuredApiBase
-  : window.location.origin;
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? window.location.origin;
 const API_PATH_PREFIX = (import.meta.env.VITE_API_PATH_PREFIX as string | undefined) ?? "/api/v1";
 
 function joinBaseAndPath(base: string, path: string): string {
@@ -11,8 +8,6 @@ function joinBaseAndPath(base: string, path: string): string {
 }
 
 const api = axios.create({ baseURL: joinBaseAndPath(API_BASE_URL, API_PATH_PREFIX) });
-
-export const API_ENDPOINT = joinBaseAndPath(API_BASE_URL, API_PATH_PREFIX);
 
 export type Deployment = {
   id: string;
@@ -58,26 +53,6 @@ api.interceptors.request.use((config) => {
   if (authToken) config.headers.Authorization = `Bearer ${authToken}`;
   return config;
 });
-
-export function getApiErrorMessage(err: unknown): string {
-  if (!axios.isAxiosError(err)) return "Request failed";
-
-  const backendError = err.response?.data?.error;
-  if (typeof backendError === "string" && backendError.trim().length > 0) return backendError;
-
-  const status = err.response?.status;
-  const contentType = String(err.response?.headers?.["content-type"] ?? "").toLowerCase();
-
-  if (!err.response) {
-    return `Cannot reach API server at ${API_ENDPOINT}.`;
-  }
-
-  if (status === 404 && contentType.includes("text/html")) {
-    return `API route is not configured at ${API_ENDPOINT}.`;
-  }
-
-  return status ? `Request failed (${status}).` : "Request failed";
-}
 
 export async function login(username: string, password: string): Promise<{ token: string; user: User }> {
   const { data } = await api.post("/auth/login", { username, password });

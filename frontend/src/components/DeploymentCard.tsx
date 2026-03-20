@@ -7,44 +7,44 @@ type DeploymentCardProps = {
 };
 
 const statusColors: Record<string, string> = {
-  running:  "bg-green-100 text-green-800",
-  building: "bg-yellow-100 text-yellow-800",
-  cloning:  "bg-blue-100 text-blue-800",
-  starting: "bg-purple-100 text-purple-800",
-  queued:   "bg-gray-100 text-gray-700",
-  stopped:  "bg-gray-100 text-gray-700",
-  failed:   "bg-red-100 text-red-800",
+  running: "bg-emerald-100 text-emerald-800 border border-emerald-200",
+  building: "bg-amber-100 text-amber-800 border border-amber-200",
+  cloning: "bg-primary-100 text-primary-800 border border-primary-200",
+  starting: "bg-cyan-100 text-cyan-800 border border-cyan-200",
+  queued: "bg-slate-100 text-slate-700 border border-slate-200",
+  stopped: "bg-slate-100 text-slate-700 border border-slate-200",
+  failed: "bg-red-100 text-red-800 border border-red-200",
 };
 
 const statusDots: Record<string, string> = {
-  running:  "bg-green-500",
-  building: "bg-yellow-500 animate-pulse",
-  cloning:  "bg-blue-500 animate-pulse",
-  starting: "bg-purple-500 animate-pulse",
-  queued:   "bg-gray-400 animate-pulse",
-  stopped:  "bg-gray-400",
-  failed:   "bg-red-500",
+  running: "bg-emerald-500",
+  building: "bg-amber-500 animate-pulse",
+  cloning: "bg-primary-500 animate-pulse",
+  starting: "bg-cyan-500 animate-pulse",
+  queued: "bg-slate-400 animate-pulse",
+  stopped: "bg-slate-400",
+  failed: "bg-red-500",
 };
 
 export default function DeploymentCard({ deployment, onViewLogs, onDelete }: DeploymentCardProps) {
-  const colorClass = statusColors[deployment.status] ?? "bg-gray-100 text-gray-700";
-  const dotClass   = statusDots[deployment.status]   ?? "bg-gray-400";
+  const colorClass = statusColors[deployment.status] ?? "bg-slate-100 text-slate-700 border border-slate-200";
+  const dotClass = statusDots[deployment.status] ?? "bg-slate-400";
 
   return (
-    <article className="border border-gray-100 rounded-xl p-5 hover:shadow-md transition-shadow bg-gray-50/50">
+    <article className="surface-card p-4 sm:p-5 hover:shadow-glow transition-all duration-300 hover:-translate-y-0.5 reveal-up">
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2 min-w-0">
           <span className={`w-2.5 h-2.5 rounded-full ${dotClass} shrink-0 mt-0.5`} />
-          <strong className="text-gray-900 font-semibold truncate">{deployment.repository}</strong>
+          <strong className="text-slate-900 font-semibold truncate">{deployment.repository}</strong>
         </div>
         <span className={`px-2.5 py-1 rounded-full text-xs font-medium shrink-0 ml-2 ${colorClass}`}>
           {deployment.status}
         </span>
       </div>
 
-      <div className="flex items-center gap-4 text-xs text-gray-500 mb-3">
+      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mb-3">
         <span>
-          Branch: <span className="font-medium text-gray-700">{deployment.branch}</span>
+          Branch: <span className="font-semibold text-slate-700">{deployment.branch}</span>
         </span>
         <span>{new Date(deployment.createdAt).toLocaleDateString()}</span>
       </div>
@@ -54,7 +54,7 @@ export default function DeploymentCard({ deployment, onViewLogs, onDelete }: Dep
           href={deployment.url}
           target="_blank"
           rel="noreferrer"
-          className="text-xs text-primary-600 hover:text-primary-700 hover:underline truncate block"
+          className="text-xs text-primary-700 hover:text-primary-800 hover:underline truncate block"
         >
           {deployment.url}
         </a>
@@ -64,27 +64,27 @@ export default function DeploymentCard({ deployment, onViewLogs, onDelete }: Dep
           href={deployment.localUrl}
           target="_blank"
           rel="noreferrer"
-          className="text-xs text-blue-600 hover:text-blue-700 hover:underline truncate block mt-1"
+          className="text-xs text-cyan-700 hover:text-cyan-800 hover:underline truncate block mt-1"
         >
           Local: {deployment.localUrl}
         </a>
       )}
-      {deployment.error && (
-        <p className="text-xs text-red-600 mt-2 line-clamp-2">{deployment.error}</p>
-      )}
+      {deployment.error && <p className="text-xs text-red-700 mt-2 line-clamp-2">{deployment.error}</p>}
 
-      <div className="flex items-center gap-2 mt-3">
+      <div className="flex items-center gap-2 mt-4">
         <button
           type="button"
           onClick={() => onViewLogs?.(deployment.id)}
-          className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-100 transition"
+          aria-label={`View logs for ${deployment.repository}`}
+          className="focus-ring min-h-9 text-xs px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 transition"
         >
           Logs
         </button>
         <button
           type="button"
           onClick={() => onDelete?.(deployment.id)}
-          className="text-xs px-2 py-1 rounded border border-red-300 text-red-700 hover:bg-red-50 transition"
+          aria-label={`Delete deployment ${deployment.repository}`}
+          className="focus-ring min-h-9 text-xs px-3 py-1.5 rounded-lg border border-red-300 text-red-700 hover:bg-red-50 transition"
         >
           Delete
         </button>

@@ -4,6 +4,10 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"instantdeploy/backend/internal/api"
 	"instantdeploy/backend/internal/auth"
@@ -78,12 +82,37 @@ func main() {
 		}
 	}()
 
-	handler := api.NewHandler(jwtManager, runtimeManager, repoClient, metrics, wsHub, userStore)
-	router := api.NewRouter(handler, metrics)
+	handler := api.NewHandler(jwtManager, runtimeManager, repoClient, metrics, wsHub, userStore, cfg.IsDev())
+	router := api.NewRouter(handler, metrics, cfg.CORSOrigins, cfg.IsDev())
 
 	addr := ":" + cfg.Port
-	log.Printf("InstantDeploy backend listening on %s", addr)
-	if err := http.ListenAndServe(addr, router); err != nil {
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	shutdownErrCh := make(chan error, 1)
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigCh
+		log.Printf("shutdown signal received: %s", sig.String())
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		shutdownErrCh <- server.Shutdown(ctx)
+	}()
+
+	log.Printf("InstantDeploy backend listening on %s (env=%s)", addr, cfg.Env)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server failed: %v", err)
+	}
+	if err := <-shutdownErrCh; err != nil {
+		log.Printf("graceful shutdown completed with error: %v", err)
+	} else {
+		log.Printf("graceful shutdown completed")
 	}
 }

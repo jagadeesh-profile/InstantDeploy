@@ -1,0 +1,78 @@
+ Image instantdeploy-backend Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 587B 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.backend
+#2 transferring dockerfile:
+#2 transferring dockerfile: 1.06kB 0.1s done
+#2 DONE 0.2s
+
+#3 [internal] load metadata for docker.io/library/golang:1.22-alpine
+#3 ...
+
+#4 [auth] library/golang:pull token for registry-1.docker.io
+#4 DONE 0.0s
+
+#5 [auth] library/alpine:pull token for registry-1.docker.io
+#5 DONE 0.0s
+
+#6 [internal] load metadata for docker.io/library/alpine:3.20
+#6 DONE 1.7s
+
+#3 [internal] load metadata for docker.io/library/golang:1.22-alpine
+#3 DONE 1.7s
+
+#7 [internal] load .dockerignore
+#7 transferring context: 2B done
+#7 DONE 0.0s
+
+#8 [builder 1/7] FROM docker.io/library/golang:1.22-alpine@sha256:1699c10032ca2582ec89a24a1312d986a3f094aed3d5c1147b19880afe40e052
+#8 DONE 0.0s
+
+#9 [stage-1 1/5] FROM docker.io/library/alpine:3.20@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
+#9 DONE 0.0s
+
+#10 [internal] load build context
+#10 transferring context: 64.39kB 0.1s done
+#10 DONE 0.2s
+
+#11 [builder 2/7] RUN apk add --no-cache git
+#11 CACHED
+
+#12 [builder 3/7] WORKDIR /build
+#12 CACHED
+
+#13 [builder 4/7] COPY backend/go.mod backend/go.sum ./
+#13 CACHED
+
+#14 [builder 5/7] RUN go mod download
+#14 CACHED
+
+#15 [builder 6/7] COPY backend/ ./
+#15 DONE 0.2s
+
+#16 [builder 7/7] RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o server ./cmd/server/main.go
+#16 DONE 36.1s
+
+#17 [stage-1 2/5] RUN apk add --no-cache     ca-certificates     git     curl     docker-cli     bash     tzdata
+#17 CACHED
+
+#18 [stage-1 3/5] RUN mkdir -p /app/data /tmp/builds
+#18 CACHED
+
+#19 [stage-1 4/5] WORKDIR /app
+#19 CACHED
+
+#20 [stage-1 5/5] COPY --from=builder /build/server /app/server
+#20 DONE 0.3s
+
+#21 exporting to image
+#21 exporting layers 0.1s done
+#21 writing image sha256:4cb9dcde182ebde099cecc99b9b24959b5b7562f91146790c7831f3f3769791f done
+#21 naming to docker.io/library/instantdeploy-backend 0.0s done
+#21 DONE 0.2s
+
+#22 resolving provenance for metadata file
+#22 DONE 0.0s
+ Image instantdeploy-backend Built 

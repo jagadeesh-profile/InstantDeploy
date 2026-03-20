@@ -1,0 +1,22 @@
+{
+  "baseUrl": "http://127.0.0.1:8082",
+  "totalRuns": 1,
+  "successRuns": 1,
+  "failedRuns": 0,
+  "successRate": 100.0,
+  "timeoutSec": 240,
+  "pollSec": 5,
+  "generatedUtc": "2026-03-18T01:24:38.6199334Z",
+  "results": [
+    {
+      "repoName": "node-ms",
+      "repository": "vercel/ms",
+      "branch": "master",
+      "run": 1,
+      "status": "running",
+      "durationSec": 60,
+      "error": "",
+      "timestampUtc": "2026-03-18T01:24:38.6186359Z"
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -12,13 +13,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func NewRouter(handler *Handler, metrics *monitoring.Metrics) http.Handler {
+func NewRouter(handler *Handler, metrics *monitoring.Metrics, corsOrigins []string, isDev bool) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
-	r.Use(utils.CORSMiddleware)
+	r.Use(utils.NewCORSMiddleware(corsOrigins, isDev))
 	r.Use(metrics.HTTPMiddleware)
 
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
@@ -29,6 +30,7 @@ func NewRouter(handler *Handler, metrics *monitoring.Metrics) http.Handler {
 		})
 	})
 	r.MethodNotAllowed(func(w http.ResponseWriter, req *http.Request) {
+		log.Printf("405 method_not_allowed method=%s path=%s ua=%q remote=%s request_id=%s", req.Method, req.URL.Path, req.UserAgent(), req.RemoteAddr, middleware.GetReqID(req.Context()))
 		utils.WriteJSON(w, http.StatusMethodNotAllowed, map[string]any{
 			"error":  "method_not_allowed",
 			"path":   req.URL.Path,
@@ -64,6 +66,7 @@ func NewRouter(handler *Handler, metrics *monitoring.Metrics) http.Handler {
 				private.Get("/deployments", handler.ListDeployments)
 				private.Post("/deployments", handler.CreateDeployment)
 				private.Delete("/deployments/{id}", handler.DeleteDeployment)
+				private.Get("/deployments/{id}/status", handler.GetDeploymentStatus)
 				private.Get("/deployments/{id}/logs", handler.GetDeploymentLogs)
 				private.Get("/repositories", handler.SearchRepositories)
 			})
@@ -72,3 +75,4 @@ func NewRouter(handler *Handler, metrics *monitoring.Metrics) http.Handler {
 
 	return r
 }
+

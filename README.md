@@ -38,11 +38,10 @@ docker compose -f infrastructure/docker-compose.yml up --build
 | Prometheus | http://localhost:9090       |
 | Grafana    | http://localhost:3000 (admin/admin) |
 
-## Demo credentials
+## Authentication
 
-| Username | Password  |
-|----------|-----------|
-| `demo`   | `Demo123!` |
+Create an account from the login page using Sign Up, then verify and sign in.
+The backend no longer auto-creates a default demo user.
 
 ## Local development (without Docker)
 
@@ -83,3 +82,22 @@ one digit, and one special character (e.g. `Demo123!`).
 ## Environment variables
 
 See `backend/.env.example` for all available configuration.
+
+### Runtime execution mode
+
+Set `EXECUTION_MODE=docker` (default) or `EXECUTION_MODE=kubernetes` in backend
+environment variables.
+
+- `docker`: builds and runs each deployment in isolated Docker containers.
+- `kubernetes`: builds image then deploys each run as a dedicated Deployment+Service
+     in namespace `instantdeploy` (requires backend RBAC in k8s manifests).
+
+### Benchmarking success rate
+
+Use the benchmark harness to measure real success rate across language samples:
+
+```powershell
+./scripts/benchmark-executions.ps1 -BaseUrl http://localhost:8080 -PerRepoRuns 1
+```
+
+Repository matrix is in `scripts/benchmark-repos.json`.

@@ -1,0 +1,72 @@
+{
+  "baseUrl": "http://127.0.0.1:8082",
+  "totalRuns": 6,
+  "successRuns": 2,
+  "failedRuns": 4,
+  "successRate": 33.33,
+  "timeoutSec": 300,
+  "pollSec": 5,
+  "generatedUtc": "2026-03-18T02:07:45.5434838Z",
+  "results": [
+    {
+      "repoName": "node-ms",
+      "repository": "vercel/ms",
+      "branch": "master",
+      "run": 1,
+      "status": "running",
+      "durationSec": 50,
+      "error": "",
+      "timestampUtc": "2026-03-18T01:59:58.7085158Z"
+    },
+    {
+      "repoName": "python-httpbin",
+      "repository": "kennethreitz/httpbin",
+      "branch": "master",
+      "run": 1,
+      "status": "failed",
+      "durationSec": 85,
+      "error": "docker run failed: docker [run -d --name instantdeploy-dep-1773799198714114614 -p 35188:80 --label instantdeploy.managed=true --label instantdeploy.deployment_id=dep_1773799198714114614 --restart no instantdeploy-dep-1773799198714114614]: 2c043b7601b346f87f9f679be8185efa57797721d94960b2b9f3db55fcfb0e19\ndocker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: \"gunicorn\": executable file not found in $PATH.",
+      "timestampUtc": "2026-03-18T02:01:23.9948647Z"
+    },
+    {
+      "repoName": "go-http-echo",
+      "repository": "hashicorp/http-echo",
+      "branch": "main",
+      "run": 1,
+      "status": "running",
+      "durationSec": 40,
+      "error": "",
+      "timestampUtc": "2026-03-18T02:02:04.1751097Z"
+    },
+    {
+      "repoName": "java-spring-boot-guide",
+      "repository": "spring-guides/gs-spring-boot",
+      "branch": "main",
+      "run": 1,
+      "status": "failed",
+      "durationSec": 206,
+      "error": "docker run failed: docker [run -d --name instantdeploy-dep-1773799324176055635 -p 39382:8080 --label instantdeploy.managed=true --label instantdeploy.deployment_id=dep_1773799324176055635 --restart no instantdeploy-dep-1773799324176055635]: 502b82bbea0233d2c06d4466a2cab3bceb8c8c2904ca9d674b32e59538b69641\ndocker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint instantdeploy-dep-1773799324176055635 (ca05ff440c8a6fef1f637589e9b54f71733479bf335c843583e5ba30cbab1a95): Bind for 0.0.0.0:39382 failed: port is already allocated.",
+      "timestampUtc": "2026-03-18T02:05:29.9548143Z"
+    },
+    {
+      "repoName": "rust-actix-examples",
+      "repository": "actix/examples",
+      "branch": "master",
+      "run": 1,
+      "status": "failed",
+      "durationSec": 20,
+      "error": "app failed to become reachable: container instantdeploy-dep-1773799529970339249 crashed (status: exited)",
+      "timestampUtc": "2026-03-18T02:05:50.0906045Z"
+    },
+    {
+      "repoName": "static-getting-started",
+      "repository": "docker/getting-started",
+      "branch": "main",
+      "run": 1,
+      "status": "failed",
+      "durationSec": 115,
+      "error": "app failed to become reachable: timeout after 1m0s — container is running but app not reachable on ports 38363/80",
+      "timestampUtc": "2026-03-18T02:07:45.5424530Z"
+    }
+  ]
+}
