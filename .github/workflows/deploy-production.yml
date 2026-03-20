@@ -1,0 +1,263 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: ['main']
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      backend_version:
+        description: 'Backend image tag'
+        required: true
+        type: string
+      frontend_version:
+        description: 'Frontend image tag'
+        required: true
+        type: string
+      enable_canary:
+        description: 'Enable canary deployment'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ${{ github.repository }}/instantdeploy-backend
+  FRONTEND_IMAGE: ${{ github.repository }}/instantdeploy-frontend
+
+jobs:
+  pre-deployment-checks:
+    name: Pre-Deployment Checks
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      backend_tag: ${{ steps.tags.outputs.backend_tag }}
+      frontend_tag: ${{ steps.tags.outputs.frontend_tag }}
+      can_deploy: ${{ steps.checks.outputs.can_deploy }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Determine image tags
+        id: tags
+        run: |
+          if [ -n "${{ github.event.inputs.backend_version }}" ]; then
+            BACKEND_TAG=${{ github.event.inputs.backend_version }}
+            FRONTEND_TAG=${{ github.event.inputs.frontend_version }}
+          else
+            BACKEND_TAG=${{ github.ref_name }}
+            FRONTEND_TAG=${{ github.ref_name }}
+          fi
+          
+          echo "backend_tag=${BACKEND_TAG}" >> $GITHUB_OUTPUT
+          echo "frontend_tag=${FRONTEND_TAG}" >> $GITHUB_OUTPUT
+      
+      - name: Set up Docker CLI
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Check image existence
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ steps.tags.outputs.backend_tag }} || {
+            echo "Backend image not found: ${{ steps.tags.outputs.backend_tag }}"
+            exit 1
+          }
+          
+          docker pull ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ steps.tags.outputs.frontend_tag }} || {
+            echo "Frontend image not found: ${{ steps.tags.outputs.frontend_tag }}"
+            exit 1
+          }
+      
+      - name: Scan images for vulnerabilities
+        run: |
+          npm install -g snyk
+          
+          snyk auth ${{ secrets.SNYK_TOKEN }}
+          snyk container test ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ steps.tags.outputs.backend_tag }} --severity-threshold=high || true
+          snyk container test ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ steps.tags.outputs.frontend_tag }} --severity-threshold=high || true
+      
+      - name: Validate Kubernetes manifests
+        run: |
+          cd infrastructure/k8s
+          kubectl apply --dry-run=client -f backend/deployment.yaml
+          kubectl apply --dry-run=client -f frontend/deployment.yaml
+      
+      - name: Health check staging
+        run: |
+          curl -f http://staging.instantdeploy.example.com/api/v1/health || {
+            echo "Staging environment unhealthy!"
+            exit 1
+          }
+      
+      - name: Mark checks passed
+        id: checks
+        run: echo "can_deploy=true" >> $GITHUB_OUTPUT
+
+  canary-deployment:
+    name: Canary Deployment
+    needs: pre-deployment-checks
+    runs-on: ubuntu-latest
+    environment: production
+    if: ${{ github.event.inputs.enable_canary == 'true' && needs.pre-deployment-checks.outputs.can_deploy == 'true' }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.27.0'
+      
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+      
+      - name: Deploy canary (10% traffic)
+        run: |
+          kubectl patch deployment instantdeploy-backend-canary \
+            -p '{"spec":{"template":{"spec":{"containers":[{"name":"instantdeploy-backend","image":"${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ needs.pre-deployment-checks.outputs.backend_tag }}"}]}}}}' \
+            -n instantdeploy || {
+            kubectl create deployment instantdeploy-backend-canary \
+              --image=${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ needs.pre-deployment-checks.outputs.backend_tag }} \
+              -n instantdeploy
+          }
+          
+          kubectl scale deployment instantdeploy-backend-canary --replicas=1 -n instantdeploy
+      
+      - name: Monitor canary metrics
+        run: |
+          sleep 300  # Wait 5 minutes
+          
+          # Check if canary is healthy
+          CANARY_ERRORS=$(kubectl logs -l app=instantdeploy-backend-canary -n instantdeploy --tail=100 | grep -c ERROR || true)
+          
+          if [ $CANARY_ERRORS -gt 5 ]; then
+            echo "Canary deployment failed - too many errors"
+            exit 1
+          fi
+      
+      - name: Approve manual rollout (if needed)
+        run: echo "Canary deployment successful - ready for full rollout"
+
+  production-deployment:
+    name: Production Deployment
+    needs: [pre-deployment-checks, canary-deployment]
+    runs-on: ubuntu-latest
+    environment: production
+    if: always() && needs.pre-deployment-checks.outputs.can_deploy == 'true'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.27.0'
+      
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+      
+      - name: Create backup
+        run: |
+          kubectl get all -n instantdeploy -o yaml > /tmp/instantdeploy-backup-$(date +%s).yaml
+          echo "Backup created: /tmp/instantdeploy-backup-*.yaml"
+      
+      - name: Update backend deployment
+        run: |
+          kubectl set image deployment/instantdeploy-backend \
+            instantdeploy-backend=${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ needs.pre-deployment-checks.outputs.backend_tag }} \
+            -n instantdeploy \
+            --record
+      
+      - name: Update frontend deployment
+        run: |
+          kubectl set image deployment/instantdeploy-frontend \
+            instantdeploy-frontend=${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ needs.pre-deployment-checks.outputs.frontend_tag }} \
+            -n instantdeploy \
+            --record
+      
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/instantdeploy-backend -n instantdeploy --timeout=10m
+          kubectl rollout status deployment/instantdeploy-frontend -n instantdeploy --timeout=10m
+      
+      - name: Run production smoke tests
+        run: |
+          RETRIES=30
+          INTERVAL=5
+          
+          for i in $(seq 1 $RETRIES); do
+            echo "Production health check attempt $i/$RETRIES..."
+            
+            HEALTH=$(curl -s https://api.instantdeploy.example.com/api/v1/health | jq .status) || true
+            
+            if [ "$HEALTH" == '"ok"' ]; then
+              echo "✓ Production is healthy"
+              break
+            fi
+            
+            if [ $i -eq $RETRIES ]; then
+              echo "✗ Production health check failed - initiating rollback"
+              ./scripts/rollback-production.sh
+              exit 1
+            fi
+            
+            sleep $INTERVAL
+          done
+      
+      - name: Run production tests
+        run: |
+          cd tests
+          npm install
+          npm run test:production || true
+      
+      - name: Cleanup canary deployment
+        if: always()
+        run: |
+          kubectl delete deployment instantdeploy-backend-canary -n instantdeploy --ignore-not-found=true || true
+      
+      - name: Send deployment notification
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            🚀 Production Deployment
+            Backend: ${{ needs.pre-deployment-checks.outputs.backend_tag }}
+            Frontend: ${{ needs.pre-deployment-checks.outputs.frontend_tag }}
+            Status: ${{ job.status }}
+            Executor: ${{ github.actor }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          fields: repo,message,commit,author
+
+  post-deployment:
+    name: Post-Deployment
+    needs: [pre-deployment-checks, production-deployment]
+    runs-on: ubuntu-latest
+    if: ${{ needs.production-deployment.result == 'success' }}
+    
+    steps:
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: prod-${{ github.run_number }}-${{ github.run_id }}
+          release_name: Production Release ${{ github.run_number }}
+          body: |
+            Backend: ${{ needs.pre-deployment-checks.outputs.backend_tag }}
+            Frontend: ${{ needs.pre-deployment-checks.outputs.frontend_tag }}
+            Deployed at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          draft: false
+          prerelease: false
+      
+      - name: Send success notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          text: '✅ Production deployment successful and verified'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}

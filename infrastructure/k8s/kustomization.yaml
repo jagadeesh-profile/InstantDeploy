@@ -1,6 +1,23 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+namespace: instantdeploy
 resources:
   - datastores
   - backend
   - frontend
+  - ingress.yaml
+  - network-policy.yaml
+  - hpa.yaml
+  - pdb.yaml
+images:
+  - name: instantdeploy-backend
+    newName: instantdeploy-backend
+    newTag: latest
+  - name: instantdeploy-frontend
+    newName: instantdeploy-frontend
+    newTag: latest
+namePrefix: instantdeploy-
+commonLabels:
+  app.kubernetes.io/name: instantdeploy
+  app.kubernetes.io/version: v1
+  app.kubernetes.io/managed-by: kustomize

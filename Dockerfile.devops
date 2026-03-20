@@ -1,0 +1,41 @@
+# Linux-based DevOps management container
+# Has: Go 1.22, Node 20, Docker CLI, kubectl, git, and build tools
+# Purpose: Build images, manage K8s cluster, deploy InstantDeploy
+
+FROM golang:1.22-alpine
+
+# ── System tools ──
+RUN apk add --no-cache \
+    bash \
+    curl \
+    wget \
+    git \
+    docker-cli \
+    docker-cli-buildx \
+    make \
+    jq \
+    openssl \
+    ca-certificates \
+    tzdata \
+    npm \
+    nodejs
+
+# ── kubectl ──
+RUN ARCH=$(uname -m) && \
+    case "$ARCH" in \
+      x86_64) KARCH="amd64" ;; \
+      aarch64) KARCH="arm64" ;; \
+      *) KARCH="amd64" ;; \
+    esac && \
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${KARCH}/kubectl" && \
+    chmod +x kubectl && \
+    mv kubectl /usr/local/bin/kubectl
+
+# ── Verify installations ──
+RUN go version && node --version && npm --version && kubectl version --client && docker --version
+
+# ── Working directory for the project ──
+WORKDIR /workspace
+
+# Keep container alive
+CMD ["bash"]

@@ -1,10 +1,106 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-* { box-sizing: border-box; }
+:root {
+  --bg-0: #f4f8ff;
+  --bg-1: #e9f2ff;
+  --text-0: #0f172a;
+  --focus-ring: #1f7bf0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
 
 body {
   margin: 0;
-  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  color: var(--text-0);
+  background:
+    radial-gradient(900px 450px at 4% -10%, rgba(31, 123, 240, 0.16), transparent 60%),
+    radial-gradient(760px 420px at 96% -8%, rgba(249, 115, 22, 0.16), transparent 55%),
+    linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 42%, #f9fbff 100%);
+}
+
+a,
+button,
+input,
+textarea,
+select {
+  transition: all 180ms ease;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@keyframes fadeUpIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: "Sora", "Space Grotesk", sans-serif;
+  letter-spacing: -0.02em;
+}
+
+@layer components {
+  .surface-card {
+    @apply rounded-2xl border border-slate-200/70 bg-white/85 shadow-lg shadow-slate-300/20 backdrop-blur;
+  }
+
+  .surface-glass {
+    @apply rounded-2xl border border-white/60 bg-white/70 shadow-xl shadow-slate-300/20 backdrop-blur;
+  }
+
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white;
+  }
+
+  .reveal-up {
+    animation: fadeUpIn 320ms ease-out both;
+  }
+
+  .reveal-delay-1 {
+    animation-delay: 60ms;
+  }
+
+  .reveal-delay-2 {
+    animation-delay: 120ms;
+  }
 }

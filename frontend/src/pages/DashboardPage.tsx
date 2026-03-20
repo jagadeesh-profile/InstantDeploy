@@ -11,7 +11,7 @@ const ACTIVE_STATUSES = new Set(["queued", "cloning", "building", "starting"]);
 
 export default function DashboardPage() {
   const { items, loading, error, deploy, refresh, remove, applyStatusUpdate } = useDeployments();
-  const { user } = useAuthStore();
+  const { user, token } = useAuthStore();
 
   const [showForm, setShowForm]             = useState(false);
   const [repository, setRepository]         = useState("octocat/Hello-World");
@@ -23,7 +23,7 @@ export default function DashboardPage() {
   const [logs, setLogs]                     = useState<DeploymentLog[]>([]);
   const [logsLoading, setLogsLoading]       = useState(false);
   const logsSeq                             = useRef(0);
-  const logsEndRef                          = useRef<HTMLDivElement>(null);
+  const logsContainerRef                    = useRef<HTMLDivElement>(null);
 
   // ---- initial load ----
   useEffect(() => { void refresh(); }, [refresh]);
@@ -59,13 +59,15 @@ export default function DashboardPage() {
 
   // ---- auto-scroll logs ----
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (logsContainerRef.current) {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+    }
   }, [logs]);
 
   // ---- WebSocket realtime updates ----
   useEffect(() => {
-    if (!user?.id) return;
-    websocketService.connect(user.id);
+    if (!user?.id || !token) return;
+    websocketService.connect(user.id, token);
 
     const unsubStatus = websocketService.on("deployment_status", (msg: WebSocketMessage) => {
       const id     = String(msg.payload.deployment_id ?? "");
@@ -88,9 +90,18 @@ export default function DashboardPage() {
     });
 
     return () => { unsubStatus(); unsubLog(); };
-  }, [applyStatusUpdate, refresh, selectedId, user?.id]);
+  }, [applyStatusUpdate, refresh, selectedId, token, user?.id]);
 
   useEffect(() => () => websocketService.disconnect(), []);
+
+  useEffect(() => {
+    if (!showForm) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowForm(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showForm]);
 
   // ---- derived stats ----
   const stats = useMemo(() => ({
@@ -137,19 +148,18 @@ export default function DashboardPage() {
   };
 
   return (
-    <div>
+    <div className="space-y-5 md:space-y-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="surface-glass p-4 sm:p-5 md:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 reveal-up">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-1">Dashboard</h1>
-          <p className="text-gray-500">
-            Welcome back,{" "}
-            <span className="font-medium text-gray-700">{user?.username}</span>!
+          <h1 className="font-display text-3xl md:text-4xl font-semibold text-slate-900 mb-1">Dashboard</h1>
+          <p className="text-slate-600">
+            Welcome back, <span className="font-semibold text-slate-800">{user?.username}</span>.
           </p>
         </div>
         <button
           onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 bg-gradient-to-r from-primary-500 to-secondary-500 text-white px-5 py-2.5 rounded-xl font-medium hover:opacity-90 transition"
+          className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 bg-gradient-to-r from-primary-600 to-secondary-500 text-white px-5 py-2.5 rounded-xl font-semibold hover:brightness-105 transition shadow-glow"
         >
           <Plus size={18} />
           New Deployment
@@ -157,27 +167,27 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 reveal-up reveal-delay-1">
         {[
-          { label: "Total",    value: stats.total,    color: "text-primary-600" },
-          { label: "Running",  value: stats.running,  color: "text-green-600"   },
-          { label: "Building", value: stats.building, color: "text-yellow-500"  },
-          { label: "Failed",   value: stats.failed,   color: "text-red-600"     },
+          { label: "Total", value: stats.total, color: "text-primary-700" },
+          { label: "Running", value: stats.running, color: "text-emerald-700" },
+          { label: "Building", value: stats.building, color: "text-amber-600" },
+          { label: "Failed", value: stats.failed, color: "text-red-700" },
         ].map(({ label, value, color }) => (
-          <div key={label} className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-            <p className="text-sm text-gray-500 mb-1">{label}</p>
-            <p className={`text-3xl font-bold ${color}`}>{value}</p>
+          <div key={label} className="surface-card p-4 sm:p-5">
+            <p className="text-sm text-slate-500 mb-1">{label}</p>
+            <p className={`font-display text-3xl font-semibold ${color}`}>{value}</p>
           </div>
         ))}
       </div>
 
       {/* Deployments list */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 mb-6">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-semibold text-gray-900">Deployments</h2>
+      <div className="surface-card p-4 sm:p-5 md:p-6 reveal-up reveal-delay-2">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="font-display text-xl font-semibold text-slate-900">Deployments</h2>
           <button
             onClick={() => void refresh()}
-            className="text-sm text-primary-600 hover:text-primary-700 font-medium"
+            className="focus-ring rounded-lg px-2 py-1 text-sm text-primary-700 hover:text-primary-800 font-semibold"
           >
             Refresh
           </button>
@@ -189,9 +199,9 @@ export default function DashboardPage() {
           </div>
         ) : items.length === 0 ? (
           <div className="text-center py-12">
-            <Rocket size={48} className="mx-auto text-gray-300 mb-4" />
-            <p className="text-gray-500 mb-1">No deployments yet</p>
-            <p className="text-sm text-gray-400">Click "New Deployment" to get started</p>
+            <Rocket size={48} className="mx-auto text-slate-300 mb-4" />
+            <p className="text-slate-600 mb-1">No deployments yet</p>
+            <p className="text-sm text-slate-500">Click "New Deployment" to get started</p>
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2">
@@ -206,39 +216,42 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {error && <p className="text-red-600 text-sm mt-4">{error}</p>}
+        {error && <p className="text-red-700 text-sm mt-4">{error}</p>}
       </div>
 
       {/* Logs panel */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+      <div className="surface-card p-4 sm:p-5 md:p-6 reveal-up">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-gray-900">Build Logs</h2>
+          <h2 className="font-display text-xl font-semibold text-slate-900">Build Logs</h2>
           <div className="flex items-center gap-3">
             {selectedId && (
               <button
-                onClick={() => { setSelectedId(null); setLogs([]); }}
-                className="text-xs text-gray-400 hover:text-gray-600"
+                onClick={() => {
+                  setSelectedId(null);
+                  setLogs([]);
+                }}
+                className="focus-ring rounded-lg px-2 py-1 text-xs text-slate-500 hover:text-slate-700"
               >
                 Clear
               </button>
             )}
-            <span className="text-xs text-gray-500">
-              {selectedId ? `ID: ${selectedId.slice(0, 16)}…` : "Select a deployment"}
+            <span className="text-xs text-slate-500">
+              {selectedId ? `ID: ${selectedId.slice(0, 16)}...` : "Select a deployment"}
             </span>
           </div>
         </div>
 
         {!selectedId ? (
-          <p className="text-sm text-gray-400">Click "Logs" on a deployment card to view build output.</p>
+          <p className="text-sm text-slate-500">Click "Logs" on a deployment card to view build output.</p>
         ) : logsLoading && logs.length === 0 ? (
-          <div className="flex items-center gap-2 text-sm text-gray-500">
+          <div className="flex items-center gap-2 text-sm text-slate-500">
             <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-400" />
-            Loading…
+            Loading...
           </div>
         ) : logs.length === 0 ? (
-          <p className="text-sm text-gray-400">No logs yet.</p>
+          <p className="text-sm text-slate-500">No logs yet.</p>
         ) : (
-          <div className="bg-gray-950 rounded-lg p-4 max-h-72 overflow-y-auto font-mono text-xs space-y-0.5">
+          <div ref={logsContainerRef} className="bg-slate-950 rounded-xl p-4 max-h-72 overflow-y-auto font-mono text-xs space-y-0.5 border border-slate-800 scroll-smooth" aria-live="polite">
             {logs.map((l, idx) => (
               <div key={`${l.time}-${idx}`} className="flex gap-2 leading-5">
                 <span className="text-gray-500 shrink-0">
@@ -250,21 +263,20 @@ export default function DashboardPage() {
                 <span className="text-gray-200 break-all">{l.message}</span>
               </div>
             ))}
-            <div ref={logsEndRef} />
           </div>
         )}
       </div>
 
       {/* New deployment modal */}
       {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+        <div className="fixed inset-0 bg-slate-950/45 backdrop-blur-sm flex items-center justify-center z-50 p-4" role="dialog" aria-modal="true" aria-labelledby="new-deployment-title">
+          <div className="surface-card p-5 sm:p-6 md:p-8 w-full max-w-md reveal-up">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-gray-900">New Deployment</h2>
+              <h2 id="new-deployment-title" className="font-display text-2xl font-semibold text-slate-900">New Deployment</h2>
               <button
                 onClick={() => setShowForm(false)}
                 aria-label="Close"
-                className="text-gray-400 hover:text-gray-600 transition"
+                className="focus-ring rounded-lg text-slate-400 hover:text-slate-600 transition"
               >
                 <X size={22} />
               </button>
@@ -272,37 +284,33 @@ export default function DashboardPage() {
 
             <form onSubmit={handleDeploy} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Repository
-                </label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Repository</label>
                 <input
                   value={repository}
                   onChange={(e) => setRepository(e.target.value)}
                   placeholder="owner/repo or https://github.com/owner/repo"
                   required
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-400"
+                  className="focus-ring w-full min-h-11 px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-300"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Branch
-                </label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Branch</label>
                 <input
                   value={branch}
                   onChange={(e) => setBranch(e.target.value)}
                   placeholder="main"
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-400"
+                  className="focus-ring w-full min-h-11 px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-300"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Custom URL <span className="text-gray-400 font-normal">(optional)</span>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Custom URL <span className="text-slate-400 font-normal">(optional)</span>
                 </label>
                 <input
                   value={deploymentUrl}
                   onChange={(e) => setDeploymentUrl(e.target.value)}
                   placeholder="https://myapp.example.com"
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-400"
+                  className="focus-ring w-full min-h-11 px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-300"
                 />
               </div>
 
@@ -310,16 +318,16 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setShowForm(false)}
-                  className="flex-1 py-3 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition font-medium"
+                  className="focus-ring flex-1 min-h-11 py-3 border border-slate-200 rounded-xl text-slate-700 hover:bg-slate-50 transition font-medium"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={deploying}
-                  className="flex-1 bg-gradient-to-r from-primary-500 to-secondary-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 transition disabled:opacity-60"
+                  className="focus-ring flex-1 min-h-11 bg-gradient-to-r from-primary-600 to-secondary-500 text-white py-3 rounded-xl font-semibold hover:brightness-105 transition disabled:opacity-60"
                 >
-                  {deploying ? "Queuing…" : "Deploy Now"}
+                  {deploying ? "Queuing..." : "Deploy Now"}
                 </button>
               </div>
             </form>

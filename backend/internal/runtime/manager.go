@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +34,7 @@ const (
 	defaultBuildWorkers = 3
 	defaultQueueSize    = 256
 	defaultQueueKey     = "instantdeploy:build_queue"
+	defaultExecutionMode = "docker"
 )
 
 // RuntimeEvent is published to subscribers on status changes and log lines.
@@ -103,6 +105,7 @@ func NewManagerWithStoreAndQueue(store Store, redisQueue *redis.Client) *Manager
 		store:        store,
 	}
 	m.hydrateFromStore()
+	m.cleanupOrphanedManagedContainers()
 	for i := 0; i < workerCount; i++ {
 		go m.workerLoop(i + 1)
 	}
@@ -278,6 +281,50 @@ func (m *Manager) List() []models.Deployment {
 	return out
 }
 
+func (m *Manager) ListByUser(userID string) []models.Deployment {
+	if strings.TrimSpace(userID) == "" {
+		return []models.Deployment{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	out := make([]models.Deployment, 0, len(m.deployments))
+	for i := range m.deployments {
+		if m.deployments[i].UserID != userID {
+			continue
+		}
+		m.lastTouched[m.deployments[i].ID] = now
+		out = append(out, m.deployments[i])
+	}
+	return out
+}
+
+func (m *Manager) Get(deploymentID string) (models.Deployment, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := range m.deployments {
+		if m.deployments[i].ID == deploymentID {
+			m.lastTouched[deploymentID] = time.Now().UTC()
+			return m.deployments[i], nil
+		}
+	}
+	return models.Deployment{}, errors.New("deployment not found")
+}
+
+func (m *Manager) GetForUser(deploymentID, userID string) (models.Deployment, error) {
+	if strings.TrimSpace(userID) == "" {
+		return models.Deployment{}, errors.New("deployment not found")
+	}
+	dep, err := m.Get(deploymentID)
+	if err != nil {
+		return models.Deployment{}, err
+	}
+	if dep.UserID != userID {
+		return models.Deployment{}, errors.New("deployment not found")
+	}
+	return dep, nil
+}
+
 func (m *Manager) Logs(deploymentID string) ([]models.DeploymentLog, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -289,6 +336,20 @@ func (m *Manager) Logs(deploymentID string) ([]models.DeploymentLog, error) {
 	out := make([]models.DeploymentLog, len(logs))
 	copy(out, logs)
 	return out, nil
+}
+
+func (m *Manager) LogsForUser(deploymentID, userID string) ([]models.DeploymentLog, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, errors.New("deployment not found")
+	}
+	dep, err := m.Get(deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	if dep.UserID != userID {
+		return nil, errors.New("deployment not found")
+	}
+	return m.Logs(deploymentID)
 }
 
 func (m *Manager) Delete(deploymentID string) error {
@@ -310,11 +371,24 @@ func (m *Manager) Delete(deploymentID string) error {
 	m.mu.Unlock()
 
 	if dep.Container != "" {
-		_ = runCmd(context.Background(), "docker", "rm", "-f", dep.Container)
+		if strings.HasPrefix(dep.Container, "k8s:") {
+			deleteKubernetesDeployment(strings.TrimPrefix(dep.Container, "k8s:"))
+		} else {
+			_ = runCmd(context.Background(), "docker", "rm", "-v", "-f", dep.Container)
+		}
 	}
 	if dep.Image != "" {
 		_ = runCmd(context.Background(), "docker", "rmi", "-f", dep.Image)
+		// Launch background cleanup to reclaim build cache space and prevent disk bloat
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+			defer cancel()
+			_ = runCmd(ctx, "docker", "image", "prune", "-f")
+			_ = runCmd(ctx, "docker", "builder", "prune", "-f")
+			_ = runCmd(ctx, "docker", "volume", "prune", "-f")
+		}()
 	}
+
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -332,6 +406,20 @@ func (m *Manager) Delete(deploymentID string) error {
 	delete(m.lastTouched, deploymentID)
 	go m.persistDelete(deploymentID)
 	return nil
+}
+
+func (m *Manager) DeleteForUser(deploymentID, userID string) error {
+	if strings.TrimSpace(userID) == "" {
+		return errors.New("deployment not found")
+	}
+	dep, err := m.Get(deploymentID)
+	if err != nil {
+		return err
+	}
+	if dep.UserID != userID {
+		return errors.New("deployment not found")
+	}
+	return m.Delete(deploymentID)
 }
 
 func (m *Manager) cleanupInactiveLoop() {
@@ -365,6 +453,46 @@ func (m *Manager) cleanupInactiveDeployments() {
 	for _, id := range staleIDs {
 		_ = m.Delete(id)
 	}
+	m.cleanupExitedManagedContainers()
+}
+
+func (m *Manager) cleanupOrphanedManagedContainers() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := runCmdOutput(ctx, "docker", "ps", "-a", "--filter", "label=instantdeploy.managed=true", "--format", "{{.ID}} {{.Label \"instantdeploy.deployment_id\"}}")
+	if err != nil {
+		return
+	}
+	tracked := make(map[string]struct{}, len(m.deployments))
+	m.mu.RLock()
+	for i := range m.deployments {
+		tracked[m.deployments[i].ID] = struct{}{}
+	}
+	m.mu.RUnlock()
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		containerID := parts[0]
+		deploymentID := parts[1]
+		if _, ok := tracked[deploymentID]; ok {
+			continue
+		}
+		_ = runCmd(context.Background(), "docker", "rm", "-f", containerID)
+	}
+}
+
+func (m *Manager) cleanupExitedManagedContainers() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = runCmd(ctx, "docker", "container", "prune", "--force", "--filter", "label=instantdeploy.managed=true")
 }
 
 // buildAndRun is the core build pipeline: clone → detect → fix → generate Dockerfile → docker build → docker run.
@@ -397,12 +525,15 @@ func (m *Manager) buildAndRun(deploymentID, repoURL, displayRepo, branch, custom
 	m.appendLog(deploymentID, "info", "Repository cloned")
 
 	// Detect, fix, and generate Dockerfile — all fixes applied automatically
-	dockerfilePath, containerPort, err := m.ensureDockerfile(tmpDir, deploymentID)
+	projectDir, dockerfilePath, containerPort, err := m.ensureDockerfile(tmpDir, deploymentID)
 	if err != nil {
 		m.markFailed(deploymentID, err.Error())
 		return
 	}
-	m.appendLog(deploymentID, "info", fmt.Sprintf("Using Dockerfile: %s", filepath.Base(dockerfilePath)))
+	if projectDir != tmpDir {
+		m.appendLog(deploymentID, "info", fmt.Sprintf("Using project root: %s", projectDir))
+	}
+	m.appendLog(deploymentID, "info", fmt.Sprintf("Using Dockerfile: %s (container port: %d)", filepath.Base(dockerfilePath), containerPort))
 
 	image := sanitizeName("instantdeploy-" + deploymentID)
 	container := sanitizeName("instantdeploy-" + deploymentID)
@@ -422,23 +553,40 @@ func (m *Manager) buildAndRun(deploymentID, repoURL, displayRepo, branch, custom
 	}
 
 	m.appendLog(deploymentID, "info", "Building Docker image")
-	buildErr := m.runDockerBuildWithRetries(tmpDir, image, dockerfilePath, deploymentID)
+	buildErr := m.runDockerBuildWithRetries(projectDir, image, dockerfilePath, deploymentID)
 	if buildErr != nil {
 		// Try patching deprecated base images
 		patched, replacement, patchErr := patchDeprecatedDockerBaseImage(dockerfilePath, buildErr.Error())
 		if patchErr == nil && patched {
 			m.appendLog(deploymentID, "warn", fmt.Sprintf("Patched deprecated base image to %s, retrying", replacement))
-			buildErr = m.runDockerBuildWithRetries(tmpDir, image, dockerfilePath, deploymentID)
+			buildErr = m.runDockerBuildWithRetries(projectDir, image, dockerfilePath, deploymentID)
 		}
 
 		// Try Java fallback
-		if buildErr != nil && shouldUseJavaDockerFallback(tmpDir, buildErr.Error()) {
-			fallbackDockerfile, ok, fallbackErr := writeJavaDockerfile(tmpDir)
+		if buildErr != nil && shouldUseJavaDockerFallback(projectDir, buildErr.Error()) {
+			fallbackDockerfile, ok, fallbackErr := writeJavaDockerfile(projectDir)
 			if fallbackErr == nil && ok {
 				dockerfilePath = fallbackDockerfile
 				containerPort = 8080
 				m.appendLog(deploymentID, "warn", "Using Java fallback Dockerfile")
-				buildErr = m.runDockerBuildWithRetries(tmpDir, image, dockerfilePath, deploymentID)
+				buildErr = m.runDockerBuildWithRetries(projectDir, image, dockerfilePath, deploymentID)
+			}
+		}
+
+		// One-time simple fallback requested in execution plan:
+		// detect language from top-level files and generate a minimal Dockerfile.
+		if buildErr != nil {
+			simpleLang := detectSimpleLanguage(projectDir)
+			if simpleLang != "unknown" {
+				simpleDockerfilePath, simplePort, simpleErr := writeSimpleDockerfile(projectDir, simpleLang)
+				if simpleErr == nil {
+					dockerfilePath = simpleDockerfilePath
+					if simplePort > 0 {
+						containerPort = simplePort
+					}
+					m.appendLog(deploymentID, "warn", fmt.Sprintf("Using one-time simple fallback Dockerfile for %s", simpleLang))
+					buildErr = m.runDockerBuildWithRetries(projectDir, image, dockerfilePath, deploymentID)
+				}
 			}
 		}
 
@@ -451,26 +599,86 @@ func (m *Manager) buildAndRun(deploymentID, repoURL, displayRepo, branch, custom
 
 	_ = runCmd(context.Background(), "docker", "rm", "-f", container)
 
-	m.updateStatus(deploymentID, "starting")
-	m.appendLog(deploymentID, "info", "Starting container")
-	ctxRun, cancelRun := context.WithTimeout(context.Background(), 1*time.Minute)
-	defer cancelRun()
-	if err := runCmd(ctxRun, "docker", dockerRunArgs(container, image, hostPort, containerPort)...); err != nil {
-		m.markFailed(deploymentID, fmt.Sprintf("docker run failed: %v", err))
-		return
-	}
-
-	m.appendLog(deploymentID, "info", "Waiting for application readiness")
-	if readyErr := waitForAppReady(hostPort, 45*time.Second); readyErr != nil {
-		containerLogs := getContainerLogs(container)
-		if containerLogs != "" {
-			m.appendLog(deploymentID, "error", containerLogs)
-		}
-		m.markFailed(deploymentID, fmt.Sprintf("app failed to become reachable: %v", readyErr))
-		return
-	}
-
+	mode := getExecutionModeFromEnv()
 	localURL := fmt.Sprintf("http://localhost:%d", hostPort)
+	resourceRef := container
+	if mode == "kubernetes" {
+		m.updateStatus(deploymentID, "starting")
+		m.appendLog(deploymentID, "info", "Starting Kubernetes deployment")
+		k8sName := sanitizeName("idep-" + deploymentID)
+		if err := deployToKubernetes(k8sName, image, containerPort, hostPort); err != nil {
+			m.markFailed(deploymentID, fmt.Sprintf("kubernetes deploy failed: %v", err))
+			return
+		}
+		resourceRef = "k8s:" + k8sName
+		if readyErr := waitForAppReady(hostPort, 60*time.Second); readyErr != nil {
+			m.markFailed(deploymentID, fmt.Sprintf("kubernetes app failed to become reachable: %v", readyErr))
+			return
+		}
+	} else {
+		m.updateStatus(deploymentID, "starting")
+		m.appendLog(deploymentID, "info", "Starting container")
+		simpleFallbackTried := false
+		ctxRun, cancelRun := context.WithTimeout(context.Background(), 1*time.Minute)
+		defer cancelRun()
+		if err := runCmd(ctxRun, "docker", dockerRunArgs(container, image, deploymentID, hostPort, containerPort)...); err != nil {
+			m.appendLog(deploymentID, "warn", fmt.Sprintf("Container start failed: %v", err))
+			if !simpleFallbackTried {
+				fallbackPort, ok := m.trySimpleFallbackDeployment(projectDir, deploymentID, image, container, hostPort)
+				simpleFallbackTried = true
+				if ok {
+					containerPort = fallbackPort
+				} else {
+					m.markFailed(deploymentID, fmt.Sprintf("docker run failed: %v", err))
+					return
+				}
+			} else {
+				m.markFailed(deploymentID, fmt.Sprintf("docker run failed: %v", err))
+				return
+			}
+		}
+
+		m.appendLog(deploymentID, "info", "Waiting for application readiness")
+		if readyErr := waitForContainerReady(container, hostPort, containerPort, 60*time.Second); readyErr != nil {
+			if strings.Contains(strings.ToLower(readyErr.Error()), "timeout after") {
+				containerLogs := getContainerLogs(container)
+				if detectedPort, ok := m.tryPortHintDeployment(projectDir, deploymentID, image, container, hostPort, containerPort, containerLogs); ok {
+					containerPort = detectedPort
+					readyErr = nil
+				}
+			}
+
+			if readyErr == nil {
+				// Recovered by retrying container startup with a detected listening port.
+			} else if !simpleFallbackTried && strings.Contains(strings.ToLower(readyErr.Error()), "status \"exited\"") {
+				m.appendLog(deploymentID, "warn", fmt.Sprintf("Container exited during readiness: %v", readyErr))
+				fallbackPort, ok := m.trySimpleFallbackDeployment(projectDir, deploymentID, image, container, hostPort)
+				simpleFallbackTried = true
+				if ok {
+					containerPort = fallbackPort
+				} else {
+					containerLogs := getContainerLogs(container)
+					if containerLogs != "" {
+						m.appendLog(deploymentID, "error", containerLogs)
+					}
+					m.markFailed(deploymentID, fmt.Sprintf("app failed to become reachable: %v", readyErr))
+					return
+				}
+			} else {
+				containerLogs := getContainerLogs(container)
+				if containerLogs != "" {
+					m.appendLog(deploymentID, "error", containerLogs)
+				}
+				errMsg := fmt.Sprintf("app failed to become reachable: %v", readyErr)
+				if hasLoopbackBindHint(containerLogs) {
+					errMsg += " — app appears to bind to 127.0.0.1/localhost inside container; bind to 0.0.0.0"
+				}
+				m.markFailed(deploymentID, errMsg)
+				return
+			}
+		}
+	}
+
 	finalURL := strings.TrimSpace(customURL)
 	if finalURL == "" {
 		finalURL = localURL
@@ -484,7 +692,7 @@ func (m *Manager) buildAndRun(deploymentID, repoURL, displayRepo, branch, custom
 			m.deployments[i].URL = finalURL
 			m.deployments[i].LocalURL = localURL
 			m.deployments[i].Image = image
-			m.deployments[i].Container = container
+			m.deployments[i].Container = resourceRef
 			m.deployments[i].Repository = displayRepo
 			m.publishLocked(RuntimeEvent{
 				Type:         "status",
@@ -500,24 +708,89 @@ func (m *Manager) buildAndRun(deploymentID, repoURL, displayRepo, branch, custom
 	}
 }
 
+func (m *Manager) trySimpleFallbackDeployment(projectDir, deploymentID, image, container string, hostPort int) (int, bool) {
+	lang := detectSimpleLanguage(projectDir)
+	if lang == "unknown" {
+		m.appendLog(deploymentID, "warn", "Simple fallback skipped: unknown language")
+		return 0, false
+	}
+
+	dockerfilePath, fallbackPort, err := writeSimpleDockerfile(projectDir, lang)
+	if err != nil {
+		m.appendLog(deploymentID, "warn", fmt.Sprintf("Simple fallback Dockerfile generation failed: %v", err))
+		return 0, false
+	}
+
+	m.appendLog(deploymentID, "warn", fmt.Sprintf("Retrying with simple fallback Dockerfile for %s", lang))
+	if err := m.runDockerBuildWithRetries(projectDir, image, dockerfilePath, deploymentID); err != nil {
+		m.appendLog(deploymentID, "warn", fmt.Sprintf("Simple fallback build failed: %v", err))
+		return 0, false
+	}
+
+	_ = runCmd(context.Background(), "docker", "rm", "-f", container)
+	ctxRun, cancelRun := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancelRun()
+	if err := runCmd(ctxRun, "docker", dockerRunArgs(container, image, deploymentID, hostPort, fallbackPort)...); err != nil {
+		m.appendLog(deploymentID, "warn", fmt.Sprintf("Simple fallback run failed: %v", err))
+		return 0, false
+	}
+
+	if err := waitForContainerReady(container, hostPort, fallbackPort, 60*time.Second); err != nil {
+		m.appendLog(deploymentID, "warn", fmt.Sprintf("Simple fallback readiness failed: %v", err))
+		return 0, false
+	}
+
+	return fallbackPort, true
+}
+
+func (m *Manager) tryPortHintDeployment(projectDir, deploymentID, image, container string, hostPort, currentPort int, containerLogs string) (int, bool) {
+	inferredPort := inferPortFromContainerLogs(containerLogs)
+	if inferredPort == 0 || inferredPort == currentPort {
+		return 0, false
+	}
+
+	m.appendLog(deploymentID, "warn", fmt.Sprintf("Detected app port %d from logs; retrying container startup", inferredPort))
+
+	_ = runCmd(context.Background(), "docker", "rm", "-f", container)
+	ctxRun, cancelRun := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancelRun()
+	if err := runCmd(ctxRun, "docker", dockerRunArgs(container, image, deploymentID, hostPort, inferredPort)...); err != nil {
+		m.appendLog(deploymentID, "warn", fmt.Sprintf("Port-hint retry run failed: %v", err))
+		return 0, false
+	}
+
+	if err := waitForContainerReady(container, hostPort, inferredPort, 60*time.Second); err != nil {
+		m.appendLog(deploymentID, "warn", fmt.Sprintf("Port-hint retry readiness failed: %v", err))
+		return 0, false
+	}
+
+	return inferredPort, true
+}
+
 // ensureDockerfile runs SmartDetector → BuildFixer → DockerfileGenerator,
-// wiring all three components together with the deployment logger.
-func (m *Manager) ensureDockerfile(repoDir, deploymentID string) (dockerfilePath string, containerPort int, err error) {
+// detecting the project type & applying any needed fixes.
+func (m *Manager) ensureDockerfile(repoDir, deploymentID string) (projectDir, dockerfilePath string, containerPort int, err error) {
 	logf := func(level, message string) {
 		m.appendLog(deploymentID, level, message)
 	}
+
+	// 0. Check if the project files are in a subdirectory
+	repoDir = findProjectRoot(repoDir, logf)
 
 	// 1. Detect project type
 	detector := NewSmartDetector()
 	project, err := detector.Detect(repoDir)
 	if err != nil {
-		return "", 0, fmt.Errorf("project detection failed: %w", err)
+		return "", "", 0, fmt.Errorf("project detection failed: %w", err)
 	}
 	logf("info", fmt.Sprintf("Detected project: %s", project.Summary))
 
 	if len(project.SkipPlugins) > 0 {
 		logf("warn", fmt.Sprintf("Found problematic plugins: %v — applying fixes", project.SkipPlugins))
 	}
+
+	// 1b. Validate required files exist
+	validateProjectFiles(repoDir, project, logf)
 
 	// 2. Fix build files if needed
 	if project.FixRequired || len(project.SkipPlugins) > 0 {
@@ -532,7 +805,93 @@ func (m *Manager) ensureDockerfile(repoDir, deploymentID string) (dockerfilePath
 
 	// 3. Generate Dockerfile
 	generator := NewDockerfileGenerator(logf)
-	return generator.Generate(repoDir, project)
+	dockerfilePath, containerPort, err = generator.Generate(repoDir, project)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return repoDir, dockerfilePath, containerPort, nil
+}
+
+// findProjectRoot checks if the project files are in the root or a subdirectory.
+// For monorepos or example repositories, the actual project may be nested.
+func findProjectRoot(repoDir string, logf func(string, string)) string {
+	// Project indicators — if any of these exist at root, it's fine
+	indicators := []string{
+		"package.json", "Dockerfile", "pom.xml", "build.gradle", "build.gradle.kts",
+		"go.mod", "Cargo.toml", "requirements.txt", "Pipfile", "pyproject.toml",
+		"Gemfile", "composer.json", "index.html",
+	}
+	for _, f := range indicators {
+		if fileExists(filepath.Join(repoDir, f)) {
+			return repoDir // Project is at root
+		}
+	}
+
+	// Not at root — scan one level of subdirectories
+	entries, err := os.ReadDir(repoDir)
+	if err != nil {
+		return repoDir
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		subDir := filepath.Join(repoDir, entry.Name())
+		for _, f := range indicators {
+			if fileExists(filepath.Join(subDir, f)) {
+				logf("info", fmt.Sprintf("Project found in subdirectory: %s", entry.Name()))
+				return subDir
+			}
+		}
+	}
+
+	return repoDir
+}
+
+// validateProjectFiles checks that required files exist for the detected type
+// and logs warnings if they're missing.
+func validateProjectFiles(repoDir string, cfg *ProjectConfig, logf func(string, string)) {
+	var missing []string
+
+	switch {
+	case strings.HasPrefix(cfg.Type, "node") || cfg.Type == "node-static":
+		if !fileExists(filepath.Join(repoDir, "package.json")) {
+			missing = append(missing, "package.json")
+		}
+	case strings.HasPrefix(cfg.Type, "python"):
+		// Check for at least one of the dependency files
+		hasDepFile := fileExists(filepath.Join(repoDir, "requirements.txt")) ||
+			fileExists(filepath.Join(repoDir, "Pipfile")) ||
+			fileExists(filepath.Join(repoDir, "pyproject.toml"))
+		if !hasDepFile {
+			logf("warn", "No requirements.txt, Pipfile, or pyproject.toml found")
+		}
+		// Check for Python entrypoint
+		hasPyEntry := false
+		for _, name := range []string{"app.py", "main.py", "server.py", "manage.py", "wsgi.py"} {
+			if fileExists(filepath.Join(repoDir, name)) {
+				hasPyEntry = true
+				break
+			}
+		}
+		if !hasPyEntry {
+			logf("warn", "No standard Python entrypoint found (app.py, main.py, server.py)")
+		}
+	case strings.HasPrefix(cfg.Type, "java"):
+		if !fileExists(filepath.Join(repoDir, "pom.xml")) &&
+			!fileExists(filepath.Join(repoDir, "build.gradle")) &&
+			!fileExists(filepath.Join(repoDir, "build.gradle.kts")) {
+			missing = append(missing, "pom.xml or build.gradle")
+		}
+	case cfg.Type == "static":
+		if cfg.OutputDir == "" {
+			logf("warn", "No index.html found in repository")
+		}
+	}
+
+	for _, f := range missing {
+		logf("warn", fmt.Sprintf("Missing required file: %s", f))
+	}
 }
 
 func (m *Manager) enqueueBuild(req buildRequest) bool {
@@ -731,11 +1090,9 @@ func (m *Manager) persistDeploymentLocked(deploymentID string) {
 	for i := range m.deployments {
 		if m.deployments[i].ID == deploymentID {
 			snapshot := m.deployments[i]
-			go func() {
-				if err := m.store.UpsertDeployment(snapshot); err != nil {
-					log.Printf("runtime persistence upsert failed for %s: %v", snapshot.ID, err)
-				}
-			}()
+			if err := m.store.UpsertDeployment(snapshot); err != nil {
+				log.Printf("runtime persistence upsert failed for %s: %v", snapshot.ID, err)
+			}
 			return
 		}
 	}
@@ -813,10 +1170,25 @@ func dockerBuildArgs(image, dockerfilePath string) []string {
 }
 
 func checkDockerDaemonAvailable() error {
-	// First check if the socket file exists at all
+	dockerHost := strings.TrimSpace(os.Getenv("DOCKER_HOST"))
+
+	// TCP connection (e.g. tcp://host.docker.internal:2375) — skip socket file check
+	if strings.HasPrefix(dockerHost, "tcp://") || strings.HasPrefix(dockerHost, "http://") {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := runCmd(ctx, "docker", "info"); err != nil {
+			if isDockerDaemonUnavailableError(err) {
+				return fmt.Errorf("cannot connect to Docker daemon at %s — ensure Docker Desktop is running and 'Expose daemon on tcp://localhost:2375' is enabled in Docker Desktop settings", dockerHost)
+			}
+			return err
+		}
+		return nil
+	}
+
+	// Unix socket path
 	socketPath := "/var/run/docker.sock"
-	if envSocket := os.Getenv("DOCKER_HOST"); envSocket != "" {
-		socketPath = strings.TrimPrefix(envSocket, "unix://")
+	if dockerHost != "" {
+		socketPath = strings.TrimPrefix(dockerHost, "unix://")
 	}
 	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
 		return fmt.Errorf(
@@ -866,8 +1238,12 @@ func isDockerDaemonUnavailableError(err error) bool {
 		strings.Contains(msg, "no such file or directory")
 }
 
-func dockerRunArgs(container, image string, hostPort, containerPort int) []string {
+func dockerRunArgs(container, image, deploymentID string, hostPort, containerPort int) []string {
 	args := []string{"run", "-d", "--name", container, "-p", fmt.Sprintf("%d:%d", hostPort, containerPort)}
+	args = append(args,
+		"--label", "instantdeploy.managed=true",
+		"--label", fmt.Sprintf("instantdeploy.deployment_id=%s", deploymentID),
+	)
 	if memory := strings.TrimSpace(os.Getenv("RUN_MEMORY")); memory != "" {
 		args = append(args, "--memory", memory)
 	}
@@ -879,9 +1255,86 @@ func dockerRunArgs(container, image string, hostPort, containerPort int) []strin
 	}
 	restart := strings.TrimSpace(os.Getenv("RUN_RESTART_POLICY"))
 	if restart == "" {
-		restart = "unless-stopped"
+		restart = "no"
 	}
 	return append(args, "--restart", restart, image)
+}
+
+func deployToKubernetes(name, image string, containerPort, nodePort int) error {
+	yaml := fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+	name: %s
+	namespace: instantdeploy
+	labels:
+		app: %s
+		instantdeploy.managed: "true"
+spec:
+	replicas: 1
+	selector:
+		matchLabels:
+			app: %s
+	template:
+		metadata:
+			labels:
+				app: %s
+				instantdeploy.managed: "true"
+		spec:
+			containers:
+				- name: app
+					image: %s
+					imagePullPolicy: IfNotPresent
+					ports:
+						- containerPort: %d
+					resources:
+						requests:
+							cpu: 100m
+							memory: 128Mi
+						limits:
+							cpu: "1"
+							memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+	name: %s
+	namespace: instantdeploy
+	labels:
+		instantdeploy.managed: "true"
+spec:
+	type: NodePort
+	selector:
+		app: %s
+	ports:
+		- protocol: TCP
+			port: %d
+			targetPort: %d
+			nodePort: %d
+`, name, name, name, name, image, containerPort, name, name, containerPort, containerPort, nodePort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := runCmdWithInput(ctx, yaml, "kubectl", "apply", "-f", "-"); err != nil {
+		return err
+	}
+	ctxWait, cancelWait := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancelWait()
+	return runCmd(ctxWait, "kubectl", "rollout", "status", fmt.Sprintf("deployment/%s", name), "-n", "instantdeploy", "--timeout=60s")
+}
+
+func deleteKubernetesDeployment(name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_ = runCmd(ctx, "kubectl", "delete", "service", name, "-n", "instantdeploy", "--ignore-not-found=true")
+	_ = runCmd(ctx, "kubectl", "delete", "deployment", name, "-n", "instantdeploy", "--ignore-not-found=true")
+}
+
+func getExecutionModeFromEnv() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("EXECUTION_MODE")))
+	if mode != "kubernetes" {
+		return defaultExecutionMode
+	}
+	return "kubernetes"
 }
 
 func patchDeprecatedDockerBaseImage(dockerfilePath, buildErr string) (bool, string, error) {
@@ -937,6 +1390,147 @@ func writeJavaDockerfile(repoDir string) (string, bool, error) {
 	return df, true, os.WriteFile(df, []byte(content), 0o644)
 }
 
+func detectSimpleLanguage(repoDir string) string {
+	// Priority: explicit project manifests first
+	if fileExists(filepath.Join(repoDir, "package.json")) {
+		return "node"
+	}
+	if fileExists(filepath.Join(repoDir, "go.mod")) {
+		return "go"
+	}
+	if fileExists(filepath.Join(repoDir, "pom.xml")) || fileExists(filepath.Join(repoDir, "build.gradle")) || fileExists(filepath.Join(repoDir, "build.gradle.kts")) {
+		return "java"
+	}
+	if fileExists(filepath.Join(repoDir, "Cargo.toml")) {
+		return "rust"
+	}
+	if fileExists(filepath.Join(repoDir, "requirements.txt")) || fileExists(filepath.Join(repoDir, "pyproject.toml")) || fileExists(filepath.Join(repoDir, "Pipfile")) {
+		return "python"
+	}
+
+	// Recursive marker scan for monorepos/example repos.
+	lang := "unknown"
+	_ = filepath.Walk(repoDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if name == ".git" || name == "node_modules" || name == "vendor" || name == ".venv" || name == "venv" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		switch info.Name() {
+		case "package.json":
+			lang = "node"
+			return filepath.SkipAll
+		case "go.mod":
+			lang = "go"
+			return filepath.SkipAll
+		case "pom.xml", "build.gradle", "build.gradle.kts":
+			lang = "java"
+			return filepath.SkipAll
+		case "Cargo.toml":
+			lang = "rust"
+			return filepath.SkipAll
+		case "requirements.txt", "pyproject.toml", "Pipfile":
+			if lang == "unknown" {
+				lang = "python"
+			}
+		}
+		return nil
+	})
+	if lang != "unknown" {
+		return lang
+	}
+
+	// Last resort: infer from Dockerfile base image.
+	if fileExists(filepath.Join(repoDir, "Dockerfile")) {
+		if b, err := os.ReadFile(filepath.Join(repoDir, "Dockerfile")); err == nil {
+			content := strings.ToLower(string(b))
+			switch {
+			case strings.Contains(content, "from python"):
+				return "python"
+			case strings.Contains(content, "from node"):
+				return "node"
+			case strings.Contains(content, "from golang"):
+				return "go"
+			case strings.Contains(content, "from gradle") || strings.Contains(content, "from maven") || strings.Contains(content, "temurin"):
+				return "java"
+			case strings.Contains(content, "from rust"):
+				return "rust"
+			}
+		}
+	}
+
+	return "unknown"
+}
+
+func writeSimpleDockerfile(repoDir, language string) (string, int, error) {
+	path := filepath.Join(repoDir, "Dockerfile.instantdeploy.simple")
+	var content string
+	containerPort := 8080
+
+	switch language {
+	case "python":
+		containerPort = 80
+		content = `FROM python:3.11
+WORKDIR /app
+COPY . .
+RUN ( [ -f requirements.txt ] && pip install -r requirements.txt || true ) && pip install gunicorn flask
+EXPOSE 80
+CMD ["sh", "-c", "python app.py || python main.py || gunicorn -b 0.0.0.0:80 app:app || gunicorn -b 0.0.0.0:80 main:app || gunicorn -b 0.0.0.0:80 httpbin:app || flask run --host=0.0.0.0 --port=80 || python -m http.server 80 --bind 0.0.0.0"]
+`
+	case "node":
+		containerPort = 80
+		content = `FROM node:18
+WORKDIR /app
+COPY . .
+RUN npm install || npm install --legacy-peer-deps
+RUN npm install -g serve
+ENV PORT=80
+EXPOSE 80
+CMD ["sh", "-c", "npm start || node server.js || node index.js || serve -s . -l 80"]
+`
+	case "go":
+		containerPort = 8080
+		content = `FROM golang:1.21
+WORKDIR /app
+COPY . .
+RUN go build -o app . || go build -o app ./cmd/server || go build -o app ./cmd/...
+EXPOSE 8080
+CMD ["./app", "-text=instantdeploy", "-listen=:8080"]
+`
+	case "java":
+		containerPort = 8080
+		content = `FROM gradle:7.6-jdk17
+WORKDIR /app
+COPY . .
+RUN gradle build --no-daemon || gradle bootJar --no-daemon
+EXPOSE 8080
+CMD ["sh", "-c", "java -jar build/libs/*.jar"]
+`
+	case "rust":
+		containerPort = 8080
+		content = `FROM rust:1.75
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+EXPOSE 8080
+CMD ["sh", "-c", "bin=$(find target/release -maxdepth 1 -type f -perm -111 | grep -v '\\.d$' | head -n 1); if [ -n \"$bin\" ]; then \"$bin\"; else python -m http.server 8080 --bind 0.0.0.0; fi"]
+`
+	default:
+		return "", 0, fmt.Errorf("unsupported language: %s", language)
+	}
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return "", 0, err
+	}
+
+	return path, containerPort, nil
+}
+
 func javaBuildTool(repoDir string) (string, bool, error) {
 	if fileExists(filepath.Join(repoDir, "pom.xml")) {
 		return "FROM maven:3.9-eclipse-temurin-17 AS build\nWORKDIR /app\nCOPY pom.xml .\nCOPY src ./src\nRUN mvn -q -DskipTests package\nFROM eclipse-temurin:17-jre\nWORKDIR /app\nCOPY --from=build /app/target/*.jar /app/app.jar\nEXPOSE 8080\nCMD [\"java\",\"-jar\",\"/app/app.jar\"]\n", true, nil
@@ -955,24 +1549,139 @@ func normalizeRepositoryInput(input string) (repoURL, displayRepo string, err er
 		return "", "", errors.New("repository is required")
 	}
 	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
-		if !strings.Contains(raw, "github.com/") {
-			return "", "", errors.New("repository URL must be a GitHub URL")
+		u, parseErr := url.Parse(raw)
+		if parseErr != nil {
+			return "", "", errors.New("invalid repository URL")
 		}
-		repoURL = strings.TrimSuffix(raw, "/")
-		if !strings.HasSuffix(repoURL, ".git") {
-			repoURL += ".git"
+		if !strings.EqualFold(u.Scheme, "https") && !strings.EqualFold(u.Scheme, "http") {
+			return "", "", errors.New("repository URL must use http or https")
 		}
-		displayRepo = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(raw, "https://github.com/"), "http://github.com/"), ".git")
+		if !strings.EqualFold(u.Hostname(), "github.com") {
+			return "", "", errors.New("repository URL must point to github.com")
+		}
+		parts := strings.Split(strings.Trim(strings.TrimSpace(u.Path), "/"), "/")
+		if len(parts) < 2 {
+			return "", "", errors.New("repository URL must include owner and repository")
+		}
+		owner := strings.TrimSpace(parts[0])
+		repo := strings.TrimSuffix(strings.TrimSpace(parts[1]), ".git")
+		nameRE := regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+		if !nameRE.MatchString(owner) || !nameRE.MatchString(repo) {
+			return "", "", errors.New("repository owner/name contains invalid characters")
+		}
+		displayRepo = owner + "/" + repo
+		repoURL = fmt.Sprintf("https://github.com/%s.git", displayRepo)
 		return repoURL, displayRepo, nil
 	}
 	if strings.Count(raw, "/") != 1 {
 		return "", "", errors.New("repository must be owner/repo or a GitHub URL")
 	}
+	parts := strings.Split(raw, "/")
+	nameRE := regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	if len(parts) != 2 || !nameRE.MatchString(parts[0]) || !nameRE.MatchString(parts[1]) {
+		return "", "", errors.New("repository must be owner/repo using valid GitHub characters")
+	}
 	return fmt.Sprintf("https://github.com/%s.git", raw), raw, nil
+}
+
+// waitForContainerReady first verifies the Docker container reaches "running"
+// state, then probes HTTP readiness through multiple network paths:
+//   - localhost:<hostPort>       (works when backend runs on the host)
+//   - host.docker.internal:<hostPort> (works from Docker Desktop containers)
+//   - <containerIP>:<containerPort>   (works when backend is a sibling container)
+func waitForContainerReady(container string, hostPort, containerPort int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	sawDirectoryListing := false
+
+	// Phase 1: Wait for the container to reach "running" state (up to 15s)
+	phase1Deadline := time.Now().Add(15 * time.Second)
+	if phase1Deadline.After(deadline) {
+		phase1Deadline = deadline
+	}
+	for time.Now().Before(phase1Deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Status}}", container)
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err == nil {
+			status := strings.TrimSpace(string(out))
+			switch status {
+			case "running":
+				goto httpCheck
+			case "exited", "dead", "removing":
+				return fmt.Errorf("container %s has status %q", container, status)
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return fmt.Errorf("container %s did not start within 15s", container)
+
+httpCheck:
+	// Phase 2: Probe HTTP readiness through multiple network paths
+	urls := []string{
+		fmt.Sprintf("http://localhost:%d", hostPort),
+		fmt.Sprintf("http://host.docker.internal:%d", hostPort),
+	}
+
+	// Also try the container's internal Docker IP (works for sibling containers)
+	if containerIP := getContainerIP(container); containerIP != "" {
+		urls = append(urls, fmt.Sprintf("http://%s:%d", containerIP, containerPort))
+	}
+
+	httpClient := &http.Client{Timeout: 3 * time.Second}
+
+	for time.Now().Before(deadline) {
+		// Re-check container hasn't crashed
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		cmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Status}}", container)
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err == nil {
+			status := strings.TrimSpace(string(out))
+			if status == "exited" || status == "dead" {
+				return fmt.Errorf("container %s crashed (status: %s)", container, status)
+			}
+		}
+
+		for _, url := range urls {
+			resp, err := httpClient.Get(url)
+			if err == nil {
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				_ = resp.Body.Close()
+				if resp.StatusCode < 500 {
+					if isDirectoryListingResponse(resp.StatusCode, resp.Header.Get("Content-Type"), string(bodyBytes)) {
+						sawDirectoryListing = true
+						continue
+					}
+					return nil
+				}
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if sawDirectoryListing {
+		return fmt.Errorf("timeout after %s — app returned directory listing instead of an application response on ports %d/%d", timeout, hostPort, containerPort)
+	}
+	return fmt.Errorf("timeout after %s — container is running but app not reachable on ports %d/%d", timeout, hostPort, containerPort)
+}
+
+// getContainerIP returns the first IP address assigned to the container, or
+// empty string if it cannot be determined.
+func getContainerIP(container string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "inspect", "-f",
+		"{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func waitForAppReady(hostPort int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	sawDirectoryListing := false
 	urls := []string{
 		fmt.Sprintf("http://localhost:%d", hostPort),
 		fmt.Sprintf("http://host.docker.internal:%d", hostPort),
@@ -981,16 +1690,81 @@ func waitForAppReady(hostPort int, timeout time.Duration) error {
 		for _, url := range urls {
 			resp, err := http.Get(url)
 			if err == nil {
-				_, _ = io.Copy(io.Discard, resp.Body)
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 				_ = resp.Body.Close()
 				if resp.StatusCode < 500 {
+					if isDirectoryListingResponse(resp.StatusCode, resp.Header.Get("Content-Type"), string(bodyBytes)) {
+						sawDirectoryListing = true
+						continue
+					}
 					return nil
 				}
 			}
 		}
 		time.Sleep(1500 * time.Millisecond)
 	}
+	if sawDirectoryListing {
+		return fmt.Errorf("timeout after %s — app returned directory listing instead of an application response", timeout)
+	}
 	return fmt.Errorf("timeout after %s", timeout)
+}
+
+func isDirectoryListingResponse(statusCode int, contentType, body string) bool {
+	if statusCode >= 500 {
+		return false
+	}
+
+	bodyLower := strings.ToLower(body)
+	contentTypeLower := strings.ToLower(contentType)
+
+	if strings.Contains(bodyLower, "directory listing for /") {
+		return true
+	}
+	if strings.Contains(bodyLower, "<title>index of /") || strings.Contains(bodyLower, "<h1>index of /") {
+		return true
+	}
+	if strings.Contains(contentTypeLower, "text/html") && strings.Contains(bodyLower, "parent directory") && strings.Contains(bodyLower, "href=") {
+		return true
+	}
+
+	// Heuristic for plain-text/raw listings frequently seen when serving repo roots.
+	// Example:
+	//   .git/
+	//   README.md
+	//   setup.py
+	//   requirements.txt
+	lines := strings.Split(bodyLower, "\n")
+	repoListingTokens := 0
+	for _, ln := range lines {
+		line := strings.TrimSpace(ln)
+		if line == "" {
+			continue
+		}
+		if strings.HasSuffix(line, "/") {
+			repoListingTokens++
+			continue
+		}
+		if strings.HasSuffix(line, ".md") ||
+			strings.HasSuffix(line, ".py") ||
+			strings.HasSuffix(line, ".cfg") ||
+			strings.HasSuffix(line, ".toml") ||
+			strings.HasSuffix(line, ".json") ||
+			strings.HasSuffix(line, ".yaml") ||
+			strings.HasSuffix(line, ".yml") ||
+			strings.HasSuffix(line, ".txt") ||
+			line == "dockerfile" ||
+			line == "requirements.txt" ||
+			line == "setup.py" ||
+			line == "package.json" ||
+			line == "go.mod" {
+			repoListingTokens++
+		}
+	}
+	if repoListingTokens >= 4 && (strings.Contains(bodyLower, ".git/") || strings.Contains(bodyLower, "dockerfile")) {
+		return true
+	}
+
+	return false
 }
 
 func getContainerLogs(container string) string {
@@ -1004,9 +1778,83 @@ func getContainerLogs(container string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func inferPortFromContainerLogs(logs string) int {
+	if strings.TrimSpace(logs) == "" {
+		return 0
+	}
+
+	reCandidates := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)https?://[^\s:]+:(\d{2,5})`),
+		regexp.MustCompile(`(?i)(?:running on|listening on|serving on)\s+(?:port\s+)?(\d{2,5})`),
+		regexp.MustCompile(`(?i)port\s*[=:]\s*(\d{2,5})`),
+	}
+
+	counts := map[int]int{}
+	for _, re := range reCandidates {
+		for _, m := range re.FindAllStringSubmatch(logs, -1) {
+			if len(m) < 2 {
+				continue
+			}
+			p, err := strconv.Atoi(strings.TrimSpace(m[1]))
+			if err != nil || p <= 0 || p > 65535 {
+				continue
+			}
+			counts[p]++
+		}
+	}
+
+	bestPort := 0
+	bestCount := 0
+	for p, c := range counts {
+		if c > bestCount {
+			bestPort = p
+			bestCount = c
+		}
+	}
+
+	return bestPort
+}
+
+func hasLoopbackBindHint(logs string) bool {
+	if strings.TrimSpace(logs) == "" {
+		return false
+	}
+	re := regexp.MustCompile(`(?i)(running on|listening on|serving on).*(127\.0\.0\.1|localhost)`)
+	return re.MatchString(logs)
+}
+
 func runCmd(ctx context.Context, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = commandEnv(name)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%s %v: %s", name, args, msg)
+	}
+	return nil
+}
+
+func runCmdOutput(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = commandEnv(name)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("%s %v: %s", name, args, msg)
+	}
+	return string(output), nil
+}
+
+func runCmdWithInput(ctx context.Context, input, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = commandEnv(name)
+	cmd.Stdin = strings.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(output))
@@ -1021,7 +1869,7 @@ func runCmd(ctx context.Context, name string, args ...string) error {
 func runCmdDir(ctx context.Context, dir, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = commandEnv(name)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(output))
@@ -1031,6 +1879,11 @@ func runCmdDir(ctx context.Context, dir, name string, args ...string) error {
 		return fmt.Errorf("%s %v: %s", name, args, msg)
 	}
 	return nil
+}
+
+func commandEnv(name string) []string {
+	_ = name
+	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 }
 
 func findAvailablePort(min, max int) (int, error) {

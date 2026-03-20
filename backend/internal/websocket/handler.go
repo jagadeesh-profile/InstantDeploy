@@ -20,12 +20,11 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
-func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
+func ServeWS(hub *Hub, userID string, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
-	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
 	client := &Client{
 		hub:    hub,
 		conn:   conn,

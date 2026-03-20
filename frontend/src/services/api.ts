@@ -1,8 +1,13 @@
 import axios from "axios";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? window.location.origin;
+const API_PATH_PREFIX = (import.meta.env.VITE_API_PATH_PREFIX as string | undefined) ?? "/api/v1";
 
-const api = axios.create({ baseURL: `${API_BASE_URL}/api/v1` });
+function joinBaseAndPath(base: string, path: string): string {
+  return `${base.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+const api = axios.create({ baseURL: joinBaseAndPath(API_BASE_URL, API_PATH_PREFIX) });
 
 export type Deployment = {
   id: string;
@@ -89,4 +94,20 @@ export async function deleteDeployment(id: string): Promise<void> {
 export async function getDeploymentLogs(id: string): Promise<DeploymentLog[]> {
   const { data } = await api.get(`/deployments/${id}/logs`);
   return data.items as DeploymentLog[];
+}
+
+export type DeploymentStatus = {
+  id: string;
+  status: string;
+  url: string;
+  localUrl?: string;
+  error?: string;
+  createdAt: string;
+  repository: string;
+  branch: string;
+};
+
+export async function getDeploymentStatus(id: string): Promise<DeploymentStatus> {
+  const { data } = await api.get(`/deployments/${id}/status`);
+  return data as DeploymentStatus;
 }

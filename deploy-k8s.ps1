@@ -34,6 +34,10 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Frontend  -> http://localhost:30000" -ForegroundColor White
 Write-Host "  Backend   -> http://localhost:30080" -ForegroundColor White
+Write-Host "  Domain    -> http://chatslm.com (after hosts file + ingress controller setup)" -ForegroundColor White
 Write-Host ""
-Write-Host "  Login: demo / Demo123!" -ForegroundColor White
+Write-Host "  Create an account from the login page (Sign Up)" -ForegroundColor White
+Write-Host ""
+Write-Host "  Hosts file entry (Windows):" -ForegroundColor DarkGray
+Write-Host "    127.0.0.1 chatslm.com" -ForegroundColor DarkGray
 Write-Host ""

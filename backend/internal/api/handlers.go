@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -32,6 +33,7 @@ type Handler struct {
 	metrics *monitoring.Metrics
 	wsHub   *websocket.Hub
 	store   *database.UserStore
+	devMode bool // when true, verification/reset codes are returned in responses
 	usersMu sync.RWMutex
 	users   map[string]storedUser
 }
@@ -54,10 +56,8 @@ func NewHandler(
 	metrics *monitoring.Metrics,
 	wsHub *websocket.Hub,
 	store *database.UserStore,
+	devMode bool,
 ) *Handler {
-	// Demo password: Demo123! — passes all validation rules
-	demoHash := mustHashPassword("Demo123!")
-
 	h := &Handler{
 		jwt:     jwt,
 		runtime: rt,
@@ -65,28 +65,8 @@ func NewHandler(
 		metrics: metrics,
 		wsHub:   wsHub,
 		store:   store,
-		users: map[string]storedUser{
-			"demo": {
-				Username:     "demo",
-				Email:        "demo@instantdeploy.local",
-				PasswordHash: demoHash,
-				Role:         "developer",
-				Verified:     true,
-			},
-		},
-	}
-
-	if h.store != nil {
-		_, found, err := h.store.GetByUsername("demo")
-		if err == nil && !found {
-			_ = h.store.CreateUser(database.UserRecord{
-				Username:     "demo",
-				Email:        "demo@instantdeploy.local",
-				PasswordHash: demoHash,
-				Role:         "developer",
-				Verified:     true,
-			})
-		}
+		devMode: devMode,
+		users:   map[string]storedUser{},
 	}
 	return h
 }
@@ -232,17 +212,21 @@ func (h *Handler) APIRoot(w http.ResponseWriter, _ *http.Request) {
 		"status":  "ok",
 		"api":     "v1",
 		"endpoints": map[string]string{
-			"health":             "/api/v1/health",
-			"auth_signup":        "/api/v1/auth/signup",
-			"auth_verify":        "/api/v1/auth/verify",
-			"auth_forgot":        "/api/v1/auth/forgot-password",
-			"auth_reset":         "/api/v1/auth/reset-password",
-			"auth_login":         "/api/v1/auth/login",
-			"runtime_stats":      "/api/v1/runtime/stats",
-			"deployments_list":   "/api/v1/deployments",
-			"deployments_create": "/api/v1/deployments",
-			"metrics":            "/metrics",
-			"websocket":          "/ws",
+			"health":              "/api/v1/health",
+			"auth_signup":         "/api/v1/auth/signup",
+			"auth_verify":         "/api/v1/auth/verify",
+			"auth_forgot":         "/api/v1/auth/forgot-password",
+			"auth_reset":          "/api/v1/auth/reset-password",
+			"auth_login":          "/api/v1/auth/login",
+			"runtime_stats":       "/api/v1/runtime/stats",
+			"deployments_list":    "/api/v1/deployments",
+			"deployments_create":  "/api/v1/deployments",
+			"deployment_status":   "/api/v1/deployments/{id}/status",
+			"deployment_logs":     "/api/v1/deployments/{id}/logs",
+			"deployment_delete":   "/api/v1/deployments/{id}",
+			"repositories_search": "/api/v1/repositories?query=...",
+			"metrics":             "/metrics",
+			"websocket":           "/ws",
 		},
 	})
 }
@@ -350,15 +334,21 @@ func (h *Handler) SignUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	utils.WriteJSON(w, http.StatusCreated, map[string]any{
-		"message":           "account created — verify before logging in",
-		"verification_code": verificationCode,
+	log.Printf("auth: verification code for user %q: %s", username, verificationCode)
+
+	response := map[string]any{
+		"message": "account created — check your email for the verification code",
 		"user": models.User{
 			ID:       username,
 			Username: username,
 			Role:     "developer",
 		},
-	})
+	}
+	// Only expose the code in development mode (no email service configured)
+	if h.devMode {
+		response["verification_code"] = verificationCode
+	}
+	utils.WriteJSON(w, http.StatusCreated, response)
 }
 
 func (h *Handler) VerifyAccount(w http.ResponseWriter, r *http.Request) {
@@ -430,10 +420,16 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, "failed to update user")
 		return
 	}
-	utils.WriteJSON(w, http.StatusOK, map[string]any{
-		"message":    "password reset code generated",
-		"reset_code": code,
-	})
+	log.Printf("auth: password reset code for user %q: %s", user.Username, code)
+
+	response := map[string]any{
+		"message": "password reset code sent — check your email",
+	}
+	// Only expose the code in development mode (no email service configured)
+	if h.devMode {
+		response["reset_code"] = code
+	}
+	utils.WriteJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
@@ -516,7 +512,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			user.LockedUntil = time.Now().Add(15 * time.Minute)
 			user.FailedAttempts = 0
 		}
-		_ = h.updateUser(user)
+		if err := h.updateUser(user); err != nil {
+			log.Printf("auth: failed to persist login lockout for %q: %v", username, err)
+		}
 		utils.WriteError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
@@ -527,7 +525,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	user.FailedAttempts = 0
 	user.LockedUntil = time.Time{}
-	_ = h.updateUser(user)
+	if err := h.updateUser(user); err != nil {
+		log.Printf("auth: failed to clear login lockout for %q: %v", username, err)
+	}
 
 	token, err := h.jwt.Generate(username)
 	if err != nil {
@@ -566,9 +566,34 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 
 // ==================== DEPLOYMENT HANDLERS ====================
 
-func (h *Handler) ListDeployments(w http.ResponseWriter, _ *http.Request) {
-	deployments := h.runtime.List()
+func (h *Handler) ListDeployments(w http.ResponseWriter, r *http.Request) {
+	requestedBy := strings.TrimSpace(r.Header.Get("X-User"))
+	deployments := h.runtime.ListByUser(requestedBy)
 	utils.WriteJSON(w, http.StatusOK, map[string]any{"items": deployments})
+}
+
+func (h *Handler) GetDeploymentStatus(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	if id == "" {
+		utils.WriteError(w, http.StatusBadRequest, "deployment id is required")
+		return
+	}
+	requestedBy := strings.TrimSpace(r.Header.Get("X-User"))
+	deployment, err := h.runtime.GetForUser(id, requestedBy)
+	if err != nil {
+		utils.WriteError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	utils.WriteJSON(w, http.StatusOK, map[string]any{
+		"id":         deployment.ID,
+		"status":     deployment.Status,
+		"url":        deployment.URL,
+		"localUrl":   deployment.LocalURL,
+		"error":      deployment.Error,
+		"createdAt":  deployment.CreatedAt,
+		"repository": deployment.Repository,
+		"branch":     deployment.Branch,
+	})
 }
 
 func (h *Handler) GetDeploymentLogs(w http.ResponseWriter, r *http.Request) {
@@ -577,7 +602,8 @@ func (h *Handler) GetDeploymentLogs(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "deployment id is required")
 		return
 	}
-	logs, err := h.runtime.Logs(id)
+	requestedBy := strings.TrimSpace(r.Header.Get("X-User"))
+	logs, err := h.runtime.LogsForUser(id, requestedBy)
 	if err != nil {
 		utils.WriteError(w, http.StatusNotFound, err.Error())
 		return
@@ -591,7 +617,8 @@ func (h *Handler) DeleteDeployment(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "deployment id is required")
 		return
 	}
-	if err := h.runtime.Delete(id); err != nil {
+	requestedBy := strings.TrimSpace(r.Header.Get("X-User"))
+	if err := h.runtime.DeleteForUser(id, requestedBy); err != nil {
 		utils.WriteError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -658,7 +685,28 @@ func (h *Handler) WebSocket(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusServiceUnavailable, "websocket hub unavailable")
 		return
 	}
-	websocket.ServeWS(h.wsHub, w, r)
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		}
+	}
+	if token == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "missing websocket token")
+		return
+	}
+	claims, err := h.jwt.Validate(token)
+	if err != nil || strings.TrimSpace(claims.Subject) == "" {
+		utils.WriteError(w, http.StatusUnauthorized, "invalid websocket token")
+		return
+	}
+	requestedUser := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	if requestedUser != "" && requestedUser != claims.Subject {
+		utils.WriteError(w, http.StatusForbidden, "websocket user mismatch")
+		return
+	}
+	websocket.ServeWS(h.wsHub, claims.Subject, w, r)
 }
 
 // ==================== VALIDATION & CRYPTO ====================
@@ -703,11 +751,15 @@ func validatePassword(password string) error {
 }
 
 func newVerificationCode() string {
-	n, err := rand.Int(rand.Reader, big.NewInt(900000))
-	if err != nil {
-		return "123456"
+	// Retry up to 3 times if crypto/rand fails
+	for i := 0; i < 3; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(900000))
+		if err == nil {
+			return fmt.Sprintf("%06d", n.Int64()+100000)
+		}
 	}
-	return fmt.Sprintf("%06d", n.Int64()+100000)
+	// If crypto/rand is broken, the system has bigger problems — fail loudly
+	panic("crypto/rand is unavailable — cannot generate secure verification code")
 }
 
 func hashPassword(password string) ([]byte, error) {

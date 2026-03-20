@@ -35,3 +35,8 @@ backend/vendor/
 
 # Backup files created by BuildFixer
 *.backup
+
+# One-off utility scripts and source dumps (not part of the project)
+extractor*.py
+InstDep.txt
+v2.txt

@@ -9,5 +9,5 @@ data:
   JWT_EXPIRY_MINUTES: "120"
   REDIS_ADDR: "redis:6379"
   DATABASE_URL: "postgres://postgres:postgres@postgres:5432/instantdeploy?sslmode=disable"
-  DOCKER_HOST: "unix:///var/run/docker.sock"
+  DOCKER_HOST: "tcp://localhost:2375"
   PROMETHEUS_ENABLED: "true"

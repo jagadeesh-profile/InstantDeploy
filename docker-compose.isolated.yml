@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
   # PostgreSQL Database
@@ -64,21 +62,31 @@ services:
       BUILD_TIMEOUT: 900
       MAX_BUILD_RETRIES: 3
 
-      # Docker socket
-      DOCKER_HOST: unix:///var/run/docker.sock
+      # Docker TCP (works on Windows via Docker Desktop TCP exposure)
+      DOCKER_HOST: tcp://host.docker.internal:2375
 
-      # Security
-      JWT_SECRET: your-secret-key-change-this-to-something-long-random
+      # Security — JWT_SECRET loaded from .env file (see .env.example)
+      # CORS — restrict to frontend origin
+      CORS_ORIGINS: http://localhost:3000,https://chatslm.com
 
+    env_file:
+      - .env
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - build_cache:/tmp/builds
       - app_data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
     networks:
       - instantdeploy-network
     restart: unless-stopped
@@ -94,7 +102,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - instantdeploy-network
     restart: unless-stopped
@@ -119,12 +128,14 @@ services:
     image: grafana/grafana:latest
     container_name: instantdeploy-grafana-isolated
     ports:
-      - "3001:3000"
+      - "3030:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./infrastructure/grafana/dashboards:/etc/grafana/provisioning/dashboards
     depends_on:
       - prometheus
     networks:
@@ -141,3 +152,4 @@ volumes:
   grafana_data:
   build_cache:
   app_data:
+
