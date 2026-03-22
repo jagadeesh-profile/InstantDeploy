@@ -493,7 +493,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, exists, err := h.getUserByUsername(username)
+	user, exists, err := h.getUserByUsernameOrEmail(username, username)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "failed to load user")
 		return
